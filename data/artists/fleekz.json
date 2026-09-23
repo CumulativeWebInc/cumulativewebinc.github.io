@@ -1,1 +1,26 @@
-{"bio": "Fleekz is the artist Black identified as the one behind 2K23 Corner$, which a live Spotify API check on 2026-09-14 showed under Appears On on That Boy Hi Hat's artist page. CWI's Global Alt-Rap Protocol names Montego Bay, Jamaica as the origin point for Fleekz and Dre50. Multiple same-name profiles exist on Spotify — they are not the collaborator and must not be confused with him. Verified profile link pending — Black can supply confirmed bio details.", "booking_cta": "mailto:hp@cumulativeweb.com", "copyright": "© 2026 Cumulative Web Inc", "image": "placeholder", "links": {"note": "Verified profile link pending — multiple same-name profiles exist, must not guess"}, "merch": {"note": "No inventory yet — join the waitlist for drop announcements", "status": "DROPPING_SOON", "waitlist": "mailto:hp@cumulativeweb.com"}, "name": "Fleekz", "releases": [], "role": "artist", "slug": "fleekz", "status": "DRAFT", "tagline": "The artist behind 2K23 Corner$ — Montego Bay origin; verified on That Boy Hi Hat's Appears On.", "tracks": [{"note": "Verified under Appears On on That Boy Hi Hat's Spotify page (2026-09-14)", "title": "2K23 Corner$"}]}
+{
+  "bio": "Fleekz reps Montego Bay, Jamaica — part of the new wave of Jamaican artists blending island roots with alt-rap, alongside CWI labelmate Dre50. He first surfaced on the CWI radar as the artist behind “2K23 Corner$,” verified under the Appears On section of That Boy Hi Hat’s official Spotify page. His full catalog and story are being confirmed — this page grows as the details land. (Verified profile link pending — multiple same-name profiles exist and must not be confused with him; Black is supplying confirmed details.)",
+  "booking_cta": "mailto:hp@cumulativeweb.com",
+  "copyright": "© 2026 Cumulative Web Inc",
+  "image": "placeholder",
+  "links": {
+    "note": "Verified profile link pending — multiple same-name profiles exist, must not guess"
+  },
+  "merch": {
+    "note": "No inventory yet — join the waitlist for drop announcements",
+    "status": "DROPPING_SOON",
+    "waitlist": "mailto:hp@cumulativeweb.com"
+  },
+  "name": "Fleekz",
+  "releases": [],
+  "role": "artist",
+  "slug": "fleekz",
+  "status": "DRAFT",
+  "tagline": "Montego Bay alt-rap — the voice behind 2K23 Corner$.",
+  "tracks": [
+    {
+      "note": "Verified under Appears On on That Boy Hi Hat's Spotify page (2026-09-14)",
+      "title": "2K23 Corner$"
+    }
+  ]
+}
