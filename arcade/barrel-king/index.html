@@ -1401,7 +1401,8 @@ var Audio2 = (function () {
 
 /* ================= INPUT (keyboard + touch) ================= */
 var Input = (function () {
-  var st = { left: false, right: false, up: false, down: false, jump: false, pause: false };
+  var st = { left: false, right: false, up: false, down: false, jump: false, pause: false,
+             touchUp: false, touchDown: false };
   var keymap = {
     ArrowLeft: 'left', KeyA: 'left',
     ArrowRight: 'right', KeyD: 'right',
@@ -1433,6 +1434,38 @@ var Input = (function () {
     el.addEventListener('pointerleave', off);
     el.addEventListener('contextmenu', function (e) { e.preventDefault(); });
   }
+  /* swipe up/down on the canvas and hold to climb ladders (touch devices) */
+  function bindSwipe() {
+    var cv = document.getElementById('game');
+    if (!cv || !cv.addEventListener) return;
+    var tid = null, y0 = 0;
+    cv.addEventListener('touchstart', function (e) {
+      var t = e.changedTouches[0];
+      tid = t.identifier; y0 = t.clientY;
+    }, { passive: true });
+    cv.addEventListener('touchmove', function (e) {
+      if (tid === null) return;
+      for (var i = 0; i < e.changedTouches.length; i++) {
+        var t = e.changedTouches[i];
+        if (t.identifier === tid) {
+          var dy = t.clientY - y0;
+          st.touchUp = dy < -24;
+          st.touchDown = dy > 24;
+        }
+      }
+    }, { passive: true });
+    function swipeEnd(e) {
+      if (tid === null) return;
+      for (var i = 0; i < e.changedTouches.length; i++) {
+        if (e.changedTouches[i].identifier === tid) {
+          tid = null; st.touchUp = false; st.touchDown = false;
+        }
+      }
+    }
+    cv.addEventListener('touchend', swipeEnd);
+    cv.addEventListener('touchcancel', swipeEnd);
+  }
+  bindSwipe();
   return {
     state: st,
     isMuted: function () { return mutedFlag; },
@@ -1444,7 +1477,7 @@ var Input = (function () {
       bindBtn('btn-jump', 'jump');
     },
     snapshot: function () {
-      return { left: st.left, right: st.right, up: st.up, down: st.down, jump: st.jump, pause: st.pause };
+      return { left: st.left, right: st.right, up: st.up || st.touchUp, down: st.down || st.touchDown, jump: st.jump, pause: st.pause };
     }
   };
 })();
@@ -1805,7 +1838,7 @@ Input.bindTouch();
 try {
   if ('ontouchstart' in window || (navigator && navigator.maxTouchPoints > 0)) {
     var he = document.getElementById('hint');
-    if (he) he.innerHTML = '&#9664; &#9654; MOVE &middot; JUMP';
+    if (he) he.innerHTML = '&#9664; &#9654; MOVE &middot; JUMP &middot; SWIPE &#9650;/&#9660; ON GAME TO CLIMB';
   }
 } catch (e) {}
 fit();
