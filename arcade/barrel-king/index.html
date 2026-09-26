@@ -6,12 +6,12 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <title>BARREL KING — CWI Arcade</title>
 <style>
-  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; -webkit-touch-callout:none; }
   html, body { height:100%; background:#050508; overflow:hidden; touch-action:none; overscroll-behavior:none; }
   body { display:flex; align-items:center; justify-content:center; font-family:monospace; color:#fff; }
   #wrap { display:flex; flex-direction:column; align-items:center; gap:8px; padding:8px; }
   #game { image-rendering:pixelated; image-rendering:crisp-edges; background:#0a0a12;
-          border:3px solid #ef6a92; border-radius:6px; box-shadow:0 0 24px rgba(239,106,146,.35); }
+          border:3px solid #ef6a92; border-radius:6px; box-shadow:0 0 24px rgba(239,106,146,.35); max-width:100vw; }
   #touch { display:flex; gap:12px; width:100%; max-width:420px; justify-content:center; }
   .tbtn { flex:1; user-select:none; -webkit-user-select:none; touch-action:none;
           background:#1a1a26; border:2px solid #41d8e8; color:#41d8e8; border-radius:12px;
@@ -20,7 +20,7 @@
   .tbtn:active { background:#41d8e8; color:#0a0a12; }
   #btn-jump { border-color:#ef6a92; color:#ef6a92; flex:1.4; }
   #btn-jump:active { background:#ef6a92; color:#0a0a12; }
-  #hint { font-size:10px; color:#555; text-align:center; line-height:1.5; }
+  #hint { font-size:10px; color:#555; text-align:center; line-height:1.5; user-select:none; -webkit-user-select:none; }
 </style>
 </head>
 <body>
@@ -29,6 +29,8 @@
   <div id="touch">
     <div class="tbtn" id="btn-left">&#9664;</div>
     <div class="tbtn" id="btn-right">&#9654;</div>
+    <div class="tbtn" id="btn-up">&#9650;</div>
+    <div class="tbtn" id="btn-down">&#9660;</div>
     <div class="tbtn" id="btn-jump">JUMP</div>
   </div>
   <div id="hint">ARROWS / A D MOVE &middot; SPACE / Z JUMP &middot; P PAUSE &middot; M MUTE<br>UP/DOWN CLIMB LADDERS</div>
@@ -1439,6 +1441,8 @@ var Input = (function () {
     bindTouch: function () {
       bindBtn('btn-left', 'left');
       bindBtn('btn-right', 'right');
+      bindBtn('btn-up', 'up');
+      bindBtn('btn-down', 'down');
       bindBtn('btn-jump', 'jump');
     },
     snapshot: function () {
@@ -1465,16 +1469,43 @@ function saveHi(v) {
 }
 
 function fit() {
-  var touchH = 120;
-  var ww = window.innerWidth, wh = window.innerHeight - touchH;
-  var s = Math.min(ww / BK.W, wh / BK.H);
+  // Robust against iOS Safari viewport quirks (toolbar show/hide, zoom,
+  // visual viewport vs layout viewport): measure the real visible area,
+  // measure the real control heights, and hard-clamp so the canvas can
+  // never overflow the screen.
+  var ww = window.innerWidth, wh = window.innerHeight;
+  try {
+    var de = document.documentElement;
+    if (de && de.clientWidth) ww = Math.min(ww, de.clientWidth);
+    if (de && de.clientHeight) wh = Math.min(wh, de.clientHeight);
+  } catch (e) {}
+  try {
+    var vv = window.visualViewport;
+    if (vv && vv.width && vv.height) { ww = Math.min(ww, vv.width); wh = Math.min(wh, vv.height); }
+  } catch (e) {}
+  var controlsH = 150;
+  try {
+    var te = document.getElementById('touch'), he = document.getElementById('hint');
+    controlsH = (te ? te.offsetHeight : 84) + (he ? he.offsetHeight : 30) + 32;
+  } catch (e) {}
+  var availH = Math.max(200, wh - controlsH);
+  var s = Math.min(ww / BK.W, availH / BK.H);
   var si = Math.floor(s);
-  var scale = si >= 2 ? si : s;
-  scale = Math.max(0.5, scale);
-  canvas.style.width = Math.floor(BK.W * scale) + 'px';
-  canvas.style.height = Math.floor(BK.H * scale) + 'px';
+  s = si >= 2 ? si : s;
+  s = Math.max(0.5, Math.min(s, 3)); // never tiny, never absurd
+  var w = Math.min(Math.floor(BK.W * s), ww); // never wider than the viewport
+  canvas.style.width = w + 'px';
+  canvas.style.height = 'auto'; // aspect preserved from width/height attributes
 }
 window.addEventListener('resize', fit);
+window.addEventListener('orientationchange', fit);
+try {
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', fit);
+  // iOS 10+ ignores user-scalable=no for pinch-zoom; block gesture zoom outright
+  document.addEventListener('gesturestart', function (e) { e.preventDefault(); });
+  document.addEventListener('gesturechange', function (e) { e.preventDefault(); });
+  document.addEventListener('gestureend', function (e) { e.preventDefault(); });
+} catch (e) {}
 
 function txt(str, x, y, color, size, align) {
   ctx.fillStyle = color || '#fff';
@@ -1519,7 +1550,9 @@ function drawSprite(name, x, y, flip) {
 
 function drawBruno(s, st) {
   var L = st.L, bx = L.bruno.x;
-  var gy = BK.girderY(L.top, bx);
+  // stage 2 (75m) splits the top into topL/topR; bruno may use {plat:'L'|'R'} or {girder:'top'}
+  var topG = L.bruno.plat === 'L' ? L.topL : (L.bruno.plat === 'R' ? L.topR : L.top);
+  var gy = BK.girderY(topG, bx);
   var spr = st.brunoT > 0 ? 'brunoThrow' : 'bruno';
   if (st.brunoFall > 0) {
     var fy = gy + st.brunoFall * 130;
@@ -1536,8 +1569,8 @@ function drawBruno(s, st) {
 
 function drawPearl(L) {
   var px = L.pearl.x;
-  var py = L.pearl.girder === 'top' ? BK.girderY(L.top, px) :
-           L.pearl.plat === 'L' ? BK.girderY(L.topL, px) : BK.girderY(L.top, px);
+  var topG = L.pearl.plat === 'L' ? L.topL : (L.pearl.plat === 'R' ? L.topR : L.top);
+  var py = BK.girderY(topG, px);
   drawSprite('pearl', px - 6, py - 16, false);
   var bob = Math.sin(Date.now() / 300) * 2;
   txt('HELP!', px + 10, py - 30 + bob, '#ff7bac', 8, 'left');
@@ -1771,6 +1804,12 @@ canvas.addEventListener('pointerdown', function () {
   }
 });
 Input.bindTouch();
+try {
+  if ('ontouchstart' in window || (navigator && navigator.maxTouchPoints > 0)) {
+    var he = document.getElementById('hint');
+    if (he) he.innerHTML = '&#9664; &#9654; MOVE &middot; &#9650; &#9660; CLIMB LADDERS &middot; JUMP';
+  }
+} catch (e) {}
 fit();
 requestAnimationFrame(frame);
 
