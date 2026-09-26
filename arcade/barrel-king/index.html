@@ -1,0 +1,1781 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>BARREL KING — CWI Arcade</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html, body { height:100%; background:#050508; overflow:hidden; touch-action:none; overscroll-behavior:none; }
+  body { display:flex; align-items:center; justify-content:center; font-family:monospace; color:#fff; }
+  #wrap { display:flex; flex-direction:column; align-items:center; gap:8px; padding:8px; }
+  #game { image-rendering:pixelated; image-rendering:crisp-edges; background:#0a0a12;
+          border:3px solid #ef6a92; border-radius:6px; box-shadow:0 0 24px rgba(239,106,146,.35); }
+  #touch { display:flex; gap:12px; width:100%; max-width:420px; justify-content:center; }
+  .tbtn { flex:1; user-select:none; -webkit-user-select:none; touch-action:none;
+          background:#1a1a26; border:2px solid #41d8e8; color:#41d8e8; border-radius:12px;
+          font-family:monospace; font-size:22px; font-weight:bold; text-align:center;
+          padding:18px 0; cursor:pointer; }
+  .tbtn:active { background:#41d8e8; color:#0a0a12; }
+  #btn-jump { border-color:#ef6a92; color:#ef6a92; flex:1.4; }
+  #btn-jump:active { background:#ef6a92; color:#0a0a12; }
+  #hint { font-size:10px; color:#555; text-align:center; line-height:1.5; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game" width="224" height="256"></canvas>
+  <div id="touch">
+    <div class="tbtn" id="btn-left">&#9664;</div>
+    <div class="tbtn" id="btn-right">&#9654;</div>
+    <div class="tbtn" id="btn-jump">JUMP</div>
+  </div>
+  <div id="hint">ARROWS / A D MOVE &middot; SPACE / Z JUMP &middot; P PAUSE &middot; M MUTE<br>UP/DOWN CLIMB LADDERS</div>
+</div>
+<script>
+/* ===== logic.js (pure game core, zero DOM) ===== */
+/* ============================================================
+   BARREL KING — pure game logic core (no DOM, no audio, no window)
+   Clean-room Donkey Kong (1981)-style mechanics. Original code.
+   Usable from node (tests) and browser (game) alike.
+   ============================================================ */
+var BK = (function () {
+'use strict';
+
+/* ---------------- utils ---------------- */
+function mulberry32(seed) {
+  var a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    var t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+
+/* ---------------- constants ---------------- */
+var W = 224, H = 256;
+var GRAV = 1050;          // px/s^2
+var JUMP_V = 235;         // initial jump velocity -> apex ~26px
+var WALK = 74;            // px/s
+var CLIMB = 58;           // px/s ladder
+var FALL_DEATH = 26;      // fall distance (px) that kills
+var PLAYER_W = 10, PLAYER_H = 16;
+
+var PTS_BARREL_JUMP = 100;
+var PTS_BARREL_SMASH = 300;
+var PTS_FIREBALL_SMASH = 500;
+var PTS_RIVET = 100;
+var PTS_PIE_SMASH = 0; // no hammer on stage 2
+var EXTRA_LIFE_AT = 7000;
+
+var SPRING_PERIOD_2 = 2.4;
+var SPRING_PERIOD_3 = 2.0;
+
+/* ---------------- stage layouts ----------------
+   girder: {x1,y1,x2,y2}  y at x via lerp
+   ladder: {x, gTop, gBot, broken} connects girder gTop (upper) to gBot (lower)
+------------------------------------------------- */
+function girderY(g, x) {
+  var t = (x - g.x1) / (g.x2 - g.x1);
+  t = clamp(t, 0, 1);
+  return g.y1 + (g.y2 - g.y1) * t;
+}
+function downhillDir(g) { return g.y2 > g.y1 ? 1 : -1; }
+
+function buildStage1() {
+  var X1 = 16, X2 = 208, S = 8; // slope px
+  var girders = [];
+  var base = [230, 198, 166, 134, 102, 70];
+  for (var i = 0; i < 6; i++) {
+    var yl = base[i], yr = base[i];
+    if (i % 2 === 0) { yl -= 0; yr = yl + S; }   // downhill right
+    else { yr -= 0; yl = yr + S; }               // downhill left
+    girders.push({ x1: X1, y1: yl, x2: X2, y2: yr });
+  }
+  // top platform (Bruno + Pearl)
+  var top = { x1: X1, y1: 46, x2: X2, y2: 42 };
+  var ladders = [
+    { x: 62,  gTop: 1, gBot: 0, broken: false },
+    { x: 168, gTop: 1, gBot: 0, broken: true  },
+    { x: 112, gTop: 2, gBot: 1, broken: false },
+    { x: 44,  gTop: 3, gBot: 2, broken: false },
+    { x: 182, gTop: 3, gBot: 2, broken: true  },
+    { x: 92,  gTop: 4, gBot: 3, broken: false },
+    { x: 152, gTop: 5, gBot: 4, broken: false },
+    { x: 62,  gTop: 'top', gBot: 5, broken: false }, // top platform
+    { x: 188, gTop: 'top', gBot: 5, broken: true  }
+  ];
+  return {
+    idx: 0, name: '25m', bonus0: 5000,
+    girders: girders, top: top, ladders: ladders,
+    oilDrum: { x: 26, girder: 0 },
+    bruno: { x: 44, girder: 'top' },
+    pearl: { x: 150, girder: 'top' },
+    winZone: { x1: 138, x2: 168, girder: 'top' },
+    playerStart: { x: 188, girder: 0 },
+    hammers: [
+      { x: 100, girder: 2 },
+      { x: 150, girder: 4 }
+    ],
+    barrelSpawn: { x: 24, girder: 5 }
+  };
+}
+
+function buildStage2() {
+  var X1 = 16, X2 = 208, S = 8;
+  var girders = [];
+  var base = [230, 198, 166, 134, 102];
+  for (var i = 0; i < 5; i++) {
+    var yl = base[i], yr = base[i];
+    if (i % 2 === 0) { yr = yl + S; } else { yl = yr + S; }
+    girders.push({ x1: X1, y1: yl, x2: X2, y2: yr });
+  }
+  // top: two platforms with a gap; springs arc across the gap
+  var topL = { x1: 16, y1: 70, x2: 118, y2: 68 };
+  var topR = { x1: 150, y1: 70, x2: 208, y2: 68 };
+  var ladders = [
+    { x: 60,  gTop: 1, gBot: 0, broken: false },
+    { x: 170, gTop: 1, gBot: 0, broken: false },
+    { x: 110, gTop: 2, gBot: 1, broken: false },
+    { x: 50,  gTop: 3, gBot: 2, broken: true  },
+    { x: 180, gTop: 3, gBot: 2, broken: false },
+    { x: 95,  gTop: 4, gBot: 3, broken: false },
+    { x: 179, gTop: 'R', gBot: 4, broken: false } // to right top platform
+  ];
+  return {
+    idx: 1, name: '75m', bonus0: 4000,
+    girders: girders, topL: topL, topR: topR, ladders: ladders,
+    bruno: { x: 40, plat: 'L' },
+    pearl: { x: 66, plat: 'L' },
+    winZone: { x1: 52, x2: 84, plat: 'L' },
+    playerStart: { x: 188, girder: 0 },
+    pieSpawn: { x: 200, girder: 4 },
+    spring: { x0: 196, y0: 62, vx: -62, vy: -52, landX: 96, landY: 66, period: SPRING_PERIOD_2 }
+  };
+}
+
+function buildStage3() {
+  var girderB = { x1: 16, y1: 232, x2: 208, y2: 228 };
+  var girderT = { x1: 16, y1: 66, x2: 208, y2: 62 };
+  return {
+    idx: 2, name: '100m', bonus0: 3000,
+    girders: [girderB],
+    top: girderT,
+    ladders: [],
+    elevators: [
+      { x: 66,  yTop: 62, yBot: 226, y: 226, dir: -1, w: 22 },
+      { x: 158, yTop: 62, yBot: 226, y: 62,  dir: 1,  w: 22 }
+    ],
+    elevatorSpeed: 46,
+    bruno: { x: 36, girder: 'top' },
+    pearl: { x: 188, girder: 'top' },
+    winZone: { x1: 176, x2: 200, girder: 'top' },
+    playerStart: { x: 112, girder: 0 },
+    spring: { x0: 24, y0: 56, vx: 62, vy: -52, landX: 200, landY: 60, period: SPRING_PERIOD_3 }
+  };
+}
+
+function buildStage4() {
+  var X1 = 24, X2 = 200, S = 6;
+  var girders = [];
+  var base = [232, 200, 168, 136, 104];
+  for (var i = 0; i < 5; i++) {
+    var yl = base[i], yr = base[i];
+    if (i % 2 === 0) { yr = yl + S; } else { yl = yr + S; }
+    girders.push({ x1: X1, y1: yl, x2: X2, y2: yr });
+  }
+  var top = { x1: 60, y1: 66, x2: 164, y2: 64 };
+  var ladders = [
+    { x: 60,  gTop: 1, gBot: 0, broken: false },
+    { x: 164, gTop: 1, gBot: 0, broken: false },
+    { x: 112, gTop: 2, gBot: 1, broken: false },
+    { x: 60,  gTop: 3, gBot: 2, broken: false },
+    { x: 164, gTop: 3, gBot: 2, broken: false },
+    { x: 112, gTop: 4, gBot: 3, broken: false },
+    { x: 112, gTop: 'T', gBot: 4, broken: false }
+  ];
+  var rivets = [];
+  [1, 2, 3, 4].forEach(function (g) {
+    rivets.push({ x: 70, girder: g, taken: false });
+    rivets.push({ x: 154, girder: g, taken: false });
+  });
+  return {
+    idx: 3, name: '50m', bonus0: 2000,
+    girders: girders, top: top, ladders: ladders, rivets: rivets,
+    bruno: { x: 112, girder: 'top' },
+    playerStart: { x: 112, girder: 0 },
+    foxes: [
+      { girder: 2, x: 60, dir: 1 },
+      { girder: 3, x: 164, dir: -1 },
+      { girder: 1, x: 112, dir: 1 }
+    ]
+  };
+}
+
+var STAGE_BUILDERS = [buildStage1, buildStage2, buildStage3, buildStage4];
+
+/* ---------------- game state ---------------- */
+function newGame(hiScore, seed) {
+  var s = {
+    screen: 'title',       // title | play | clear | over
+    paused: false,
+    stage: 0,
+    loop: 1,               // difficulty loop
+    score: 0,
+    hi: hiScore || 0,
+    lives: 3,
+    bonus: 0,
+    bonusT: 0,
+    rng: mulberry32(seed == null ? (Date.now() & 0xffffffff) : seed),
+    t: 0,
+    shake: 0,
+    extraGiven: false,
+    stageState: null,
+    msg: '',
+    msgT: 0
+  };
+  return s;
+}
+
+function platY(L, p) {
+  // platform descriptor: {girder: n|'top'|'L'|'R'} or {elevator: i} -> y at x
+  if (p.girder === 'top') return girderY(L.top, p.x);
+  if (p.girder === 'L') return girderY(L.topL, p.x);
+  if (p.girder === 'R') return girderY(L.topR, p.x);
+  if (p.girder === 'T') return girderY(L.top, p.x);
+  return girderY(L.girders[p.girder], p.x);
+}
+
+function startStage(s, idx) {
+  var L = STAGE_BUILDERS[idx]();
+  var st = {
+    L: L,
+    player: freshPlayer(L),
+    barrels: [],
+    fireballs: [],
+    pies: [],
+    springs: [],
+    springT: L.spring ? 0.8 : 0,
+    elevators: L.elevators ? L.elevators.map(function (e) {
+      return { x: e.x, yTop: e.yTop, yBot: e.yBot, y: e.y, dir: e.dir, w: e.w };
+    }) : [],
+    hammers: L.hammers ? L.hammers.map(function (h) {
+      return { x: h.x, y: platY(L, { x: h.x, girder: h.girder }) - 14, taken: false };
+    }) : [],
+    rivets: L.rivets ? L.rivets.map(function (r) {
+      return { x: r.x, y: girderY(L.girders[r.girder], r.x), girder: r.girder, taken: false };
+    }) : [],
+    foxes: L.foxes ? L.foxes.map(function (f) {
+      return { x: f.x, girder: f.girder, dir: f.dir, y: 0, anim: 0 };
+    }) : [],
+    barrelT: 1.2,
+    fireT: 6,
+    pieT: 1.0,
+    oilCount: 0,
+    brunoT: 0,
+    brunoFall: 0,
+    clearT: 0,
+    deadT: 0,
+    jumpId: 0,
+    scoredJump: {}
+  };
+  // fox y init
+  st.foxes.forEach(function (f) { f.y = girderY(L.girders[f.girder], f.x); });
+  s.stageState = st;
+  s.bonus = L.bonus0;
+  s.bonusT = 0;
+  s.screen = 'play';
+}
+
+function freshPlayer(L) {
+  var ps = L.playerStart;
+  return {
+    x: ps.x, y: platY(L, { x: ps.x, girder: ps.girder }),
+    vx: 0, vy: 0, dir: 1,
+    ground: platKey(ps.girder),   // {girder} | {elevator:i} | null
+    climbing: null,               // ladder ref
+    jumping: false,
+    hammerT: 0,
+    dead: false,
+    fallFrom: 0,
+    coyote: 0,
+    anim: 0,
+    elev: -1
+  };
+}
+function platKey(g) { return { girder: g }; }
+
+function addScore(s, n) {
+  s.score += n;
+  if (s.score > s.hi) s.hi = s.score;
+  if (!s.extraGiven && s.score >= EXTRA_LIFE_AT) {
+    s.extraGiven = true;
+    s.lives++;
+    s.msg = 'EXTRA JACK!'; s.msgT = 2;
+  }
+}
+
+/* ---------------- ladders ---------------- */
+function ladderSpan(L, lad) {
+  var topG = lad.gTop === 'top' || lad.gTop === 'T' ? L.top :
+             lad.gTop === 'L' ? L.topL : lad.gTop === 'R' ? L.topR :
+             L.girders[lad.gTop];
+  var botG = L.girders[lad.gBot];
+  var yTop = girderY(topG, lad.x);
+  var yBot = girderY(botG, lad.x);
+  if (lad.broken) yTop = yTop + (yBot - yTop) * 0.42; // broken: doesn't reach
+  return { yTop: yTop, yBot: yBot };
+}
+function ladderAt(L, x, feetY) {
+  for (var i = 0; i < L.ladders.length; i++) {
+    var lad = L.ladders[i];
+    if (Math.abs(x - lad.x) > 7) continue;
+    var sp = ladderSpan(L, lad);
+    if (feetY >= sp.yTop - 6 && feetY <= sp.yBot + 6) return { lad: lad, sp: sp };
+  }
+  return null;
+}
+
+/* ---------------- player update ---------------- */
+function updatePlayer(s, st, inp, dt) {
+  var L = st.L, p = st.player, rng = s.rng;
+  if (p.dead) { st.deadT += dt; return; }
+
+  p.anim += dt;
+  if (p.hammerT > 0) p.hammerT -= dt;
+
+  var speedMul = 1 + (s.loop - 1) * 0.12;
+
+  /* climbing */
+  if (p.climbing) {
+    var sp = ladderSpan(L, p.climbing);
+    if (inp.up) p.y -= CLIMB * dt;
+    if (inp.down) p.y += CLIMB * dt;
+    p.x = p.climbing.x;
+    p.jumping = false;
+    if (p.y <= sp.yTop + 2) { // reached top of ladder
+      if (p.climbing.broken) {
+        p.y = sp.yTop; // broken ladder dead-ends: stay on it
+      } else {
+        p.y = sp.yTop; p.climbing = null;
+        p.ground = platKey(p.climbingGTop);
+      }
+    } else if (p.y >= sp.yBot - 2 && p.y > p.climbEntryY + 4) {
+      // reached bottom (and actually descended — not the entry frame)
+      p.y = sp.yBot; p.climbing = null;
+      p.ground = platKey(p.climbingGBot);
+    }
+    // jump off ladder? original: no. keep authentic.
+    return;
+  }
+
+  /* try to grab ladder */
+  if ((inp.up || inp.down) && !p.jumping) {
+    var hit = ladderAt(L, p.x, p.y);
+    if (hit && !hit.lad.broken || hit && inp.down) {
+      // up onto broken ladder not allowed past its span; ladderAt already limited
+      if (inp.up && hit.lad.broken && p.y < hit.sp.yTop + 4) {
+        // can't climb a broken ladder from below past its top -> treat as no grab
+      } else {
+        p.climbing = hit.lad;
+        p.climbingGTop = hit.lad.gTop;
+        p.climbingGBot = hit.lad.gBot;
+        p.climbEntryY = p.y;
+        p.vx = 0; p.vy = 0;
+        return;
+      }
+    }
+  }
+
+  /* ground: girder or elevator */
+  var onElev = -1;
+  if (L.elevators) {
+    for (var e = 0; e < st.elevators.length; e++) {
+      var el = st.elevators[e];
+      if (Math.abs(p.x - el.x) < el.w / 2 + 3 && Math.abs(p.y - el.y) < 6 && p.vy >= 0) {
+        onElev = e;
+      }
+    }
+  }
+
+  var standing = p.ground !== null && !p.jumping;
+  if (standing && onElev >= 0) {
+    var elv = st.elevators[onElev];
+    p.y = elv.y; p.elev = onElev; p.ground = { elevator: onElev };
+  }
+
+  if (!p.jumping) {
+    /* walk */
+    var mv = 0;
+    if (inp.left) mv -= 1;
+    if (inp.right) mv += 1;
+    p.vx = mv * WALK;
+    if (mv !== 0) p.dir = mv;
+    p.x += p.vx * dt;
+
+    /* slope follow / walk off */
+    var g = groundGirder(L, p);
+    if (g) {
+      if (p.x < g.x1 - 2 || p.x > g.x2 + 2) {
+        // walked off the end -> start falling
+        p.jumping = true; p.vy = 0; p.fallFrom = p.y;
+        p.ground = null;
+      } else {
+        p.y = girderY(g, p.x);
+        p.fallFrom = p.y;
+      }
+    } else if (p.ground && p.ground.elevator != null) {
+      var el2 = st.elevators[p.ground.elevator];
+      if (Math.abs(p.x - el2.x) > el2.w / 2 + 4) {
+        p.jumping = true; p.vy = 0; p.fallFrom = p.y; p.ground = null; p.elev = -1;
+      } else {
+        p.y = el2.y;
+      }
+    }
+
+    /* jump */
+    if (inp.jump && !inp._prevJump) {
+      p.jumping = true;
+      p.vy = -JUMP_V;
+      p.vx = p.dir * WALK; // committed: no air control (authentic)
+      p.fallFrom = p.y;
+      st.jumpId++;
+      st.scoredJump = {};
+      s.events.push({ t: 'jump' });
+    }
+  } else {
+    /* airborne: NO air control — vx locked at takeoff */
+    p.vy += GRAV * dt;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    if (p.x < 4) { p.x = 4; p.vx = 0; }
+    if (p.x > W - 4) { p.x = W - 4; p.vx = 0; }
+    landCheck(s, st, dt);
+  }
+
+  /* hammer pickup */
+  for (var h = 0; h < st.hammers.length; h++) {
+    var hm = st.hammers[h];
+    if (!hm.taken && Math.abs(p.x - hm.x) < 10 && Math.abs(p.y - hm.y) < 14) {
+      hm.taken = true;
+      p.hammerT = 6;
+      s.events.push({ t: 'hammer' });
+    }
+  }
+
+  /* rivets (stage 4) */
+  for (var r = 0; r < st.rivets.length; r++) {
+    var rv = st.rivets[r];
+    if (!rv.taken && Math.abs(p.x - rv.x) < 8 && Math.abs(p.y - rv.y) < 10) {
+      rv.taken = true;
+      addScore(s, PTS_RIVET);
+      s.events.push({ t: 'rivet' });
+    }
+  }
+
+  /* win zone */
+  var wz = L.winZone;
+  if (wz && !p.jumping && !p.climbing) {
+    var wy = wz.girder === 'top' ? girderY(L.top, p.x) :
+             wz.plat === 'L' ? girderY(L.topL, p.x) : girderY(L.top, p.x);
+    if (p.x >= wz.x1 && p.x <= wz.x2 && Math.abs(p.y - wy) < 10) {
+      stageClear(s, st);
+    }
+  }
+
+  /* fell off world */
+  if (p.y > H + 20) killPlayer(s, st, 'fall');
+}
+
+function groundGirder(L, p) {
+  if (!p.ground || p.ground.girder == null) return null;
+  var gk = p.ground.girder;
+  if (gk === 'top' || gk === 'T') return L.top;
+  if (gk === 'L') return L.topL;
+  if (gk === 'R') return L.topR;
+  return L.girders[gk];
+}
+
+function landCheck(s, st, dt) {
+  var L = st.L, p = st.player;
+  if (p.vy < 0) return; // still rising
+  // candidate surfaces below
+  var cands = [];
+  var all = L.girders.slice();
+  if (L.top) all.push({ top: true, g: L.top });
+  if (L.topL) all.push({ top: true, g: L.topL });
+  if (L.topR) all.push({ top: true, g: L.topR });
+  for (var i = 0; i < all.length; i++) {
+    var gg = all[i].g || all[i];
+    if (p.x < gg.x1 - 3 || p.x > gg.x2 + 3) continue;
+    var gy = girderY(gg, p.x);
+    if (p.y >= gy - 2 && p.y - p.vy * dt <= gy + 4) {
+      cands.push({ y: gy, g: all[i].top ? (L.topL && gg === L.topL ? 'L' : L.topR && gg === L.topR ? 'R' : 'top') : i });
+    }
+  }
+  // elevators
+  if (st.elevators) {
+    for (var e = 0; e < st.elevators.length; e++) {
+      var el = st.elevators[e];
+      if (Math.abs(p.x - el.x) < el.w / 2 + 3 && p.y >= el.y - 2 && p.y - p.vy * dt <= el.y + 4) {
+        cands.push({ y: el.y, elev: e });
+      }
+    }
+  }
+  if (!cands.length) return;
+  cands.sort(function (a, b) { return a.y - b.y; });
+  var c = cands[0];
+  var drop = p.y - p.fallFrom;
+  p.y = c.y;
+  p.vy = 0;
+  p.jumping = false;
+  if (c.elev != null) { p.ground = { elevator: c.elev }; p.elev = c.elev; }
+  else { p.ground = platKey(c.g); p.elev = -1; }
+  if (drop > FALL_DEATH && c.elev == null) {
+    // hard landing kills (elevator landings are gentle by design)
+    killPlayer(s, st, 'fall');
+  }
+  p.fallFrom = p.y;
+}
+
+function killPlayer(s, st, cause) {
+  var p = st.player;
+  if (p.dead) return;
+  p.dead = true;
+  p.deadCause = cause;
+  st.deadT = 0;
+  s.events.push({ t: 'death', cause: cause });
+}
+
+function stageClear(s, st) {
+  if (st.clearT > 0) return;
+  // stage 4 clears via rivets, not win zone (no winZone there)
+  s._lastBonus = s.bonus;   // recorded once for the tally display
+  addScore(s, s.bonus);     // remaining time bonus awarded exactly once
+  s.bonus = 0;
+  st.clearT = 0.001;
+  s.events.push({ t: 'clear' });
+}
+
+/* ---------------- enemies ---------------- */
+function spawnBarrel(s, st) {
+  var L = st.L;
+  if (st.barrels.length >= 7) return;
+  var bs = L.barrelSpawn;
+  var g = L.girders[bs.girder];
+  var dir = downhillDir(g);
+  st.barrels.push({
+    x: bs.x, y: girderY(g, bs.x), vx: 0,
+    girder: bs.girder, dir: dir, state: 'roll', vy: 0,
+    dropX: pickDropX(s, st, bs.girder), anim: 0
+  });
+  st.brunoT = 0.35; // throw anim
+  s.events.push({ t: 'throw' });
+}
+function pickDropX(s, st, girder) {
+  // choose one ladder (if any) on this girder to descend, or null
+  var L = st.L, cands = [];
+  for (var i = 0; i < L.ladders.length; i++) {
+    var lad = L.ladders[i];
+    if (lad.gTop === girder && !lad.broken) cands.push(lad);
+  }
+  if (!cands.length || s.rng() > 0.45) return null;
+  return cands[(s.rng() * cands.length) | 0].x;
+}
+
+function updateBarrels(s, st, dt) {
+  var L = st.L, speedMul = 1 + (s.loop - 1) * 0.15;
+  for (var i = st.barrels.length - 1; i >= 0; i--) {
+    var b = st.barrels[i];
+    b.anim += dt;
+    if (b.state === 'roll') {
+      var g = L.girders[b.girder];
+      b.x += b.dir * 58 * speedMul * dt;
+      b.y = girderY(g, b.x);
+      // ladder drop?
+      if (b.dropX != null && Math.abs(b.x - b.dropX) < 3) {
+        var lad = null;
+        for (var li = 0; li < L.ladders.length; li++) {
+          var l2 = L.ladders[li];
+          if (l2.gTop === b.girder && Math.abs(l2.x - b.dropX) < 4) { lad = l2; break; }
+        }
+        if (lad) {
+          b.state = 'ladder';
+          b.ladderTo = lad.gBot; // explicit target girder (never skip past it)
+        }
+        b.dropX = null;
+      } else if ((b.dir > 0 && b.x >= g.x2 - 2) || (b.dir < 0 && b.x <= g.x1 + 2)) {
+        b.state = 'fall'; b.vy = 0;
+      }
+    } else if (b.state === 'ladder') {
+      b.y += 95 * dt;
+      var tgL = L.girders[b.ladderTo];
+      var tyL = girderY(tgL, b.x);
+      if (b.y >= tyL - 2) {
+        b.girder = b.ladderTo; b.y = tyL;
+        b.dir = downhillDir(tgL);
+        b.state = 'roll';
+        b.dropX = pickDropX(s, st, b.girder);
+      }
+    } else if (b.state === 'fall') {
+      b.vy += GRAV * dt;
+      b.y += b.vy * dt;
+      b.x += b.dir * 20 * dt;
+      var t2 = girderBelow(L, b.x, b.y - 4);
+      if (t2 && b.y >= t2.y) {
+        b.girder = t2.i; b.y = t2.y;
+        b.dir = downhillDir(L.girders[t2.i]);
+        b.state = 'roll';
+        b.dropX = pickDropX(s, st, t2.i);
+        s.events.push({ t: 'bounce' });
+      } else if (b.y > H + 12) {
+        st.barrels.splice(i, 1);
+      }
+    }
+  }
+  // spawn timer (only on stages with a barrel spawn point)
+  if (L.barrelSpawn) {
+    var interval = Math.max(1.4, 3.0 - (s.loop - 1) * 0.35);
+    st.barrelT -= dt;
+    if (st.barrelT <= 0) {
+      st.barrelT = interval;
+      st.oilCount++;
+      if (st.oilCount % 6 === 0) spawnFireball(s, st);
+      else spawnBarrel(s, st);
+    }
+  }
+}
+
+function girderBelow(L, x, y) {
+  var best = null;
+  for (var i = 0; i < L.girders.length; i++) {
+    var g = L.girders[i];
+    if (x < g.x1 - 4 || x > g.x2 + 4) continue;
+    var gy = girderY(g, x);
+    if (gy > y + 2 && (!best || gy < best.y)) best = { i: i, y: gy };
+  }
+  return best;
+}
+
+function spawnFireball(s, st) {
+  var L = st.L;
+  if (!L.oilDrum || st.fireballs.length >= 3) return;
+  var od = L.oilDrum;
+  st.fireballs.push({
+    x: od.x + 10, y: girderY(L.girders[od.girder], od.x),
+    girder: od.girder, dir: s.rng() > 0.5 ? 1 : -1,
+    state: 'roll', climbTo: 0, anim: 0
+  });
+  s.events.push({ t: 'fireSpawn' });
+}
+
+function playerLevel(L, p) {
+  if (!p.ground) return -1;
+  var gk = p.ground.girder;
+  if (gk == null) return -1;
+  if (gk === 'top' || gk === 'T' || gk === 'L' || gk === 'R') return 99;
+  return gk;
+}
+
+function updateFireballs(s, st, dt) {
+  var L = st.L, p = st.player;
+  var speedMul = 1 + (s.loop - 1) * 0.15;
+  var pl = playerLevel(L, p);
+  for (var i = st.fireballs.length - 1; i >= 0; i--) {
+    var f = st.fireballs[i];
+    f.anim += dt;
+    if (f.state === 'roll') {
+      var g = L.girders[f.girder];
+      f.x += f.dir * 46 * speedMul * dt;
+      f.y = girderY(g, f.x);
+      // ladder decision: move toward player's level
+      for (var li = 0; li < L.ladders.length; li++) {
+        var lad = L.ladders[li];
+        if (lad.broken || Math.abs(f.x - lad.x) > 3) continue;
+        if (pl > f.girder && lad.gBot === f.girder && s.rng() < 0.6) {
+          f.state = 'climb'; f.climbTo = lad.gTop; f.climbX = lad.x; break;
+        }
+        if (pl < f.girder && pl >= 0 && lad.gTop === f.girder && s.rng() < 0.6) {
+          f.state = 'climb'; f.climbTo = lad.gBot; f.climbX = lad.x; break;
+        }
+      }
+      if (f.x > g.x2 - 2) { f.x = g.x2 - 2; f.dir = -1; }
+      if (f.x < g.x1 + 2) { f.x = g.x1 + 2; f.dir = 1; }
+    } else if (f.state === 'climb') {
+      var tg = f.climbTo === 'top' || f.climbTo === 'T' ? L.top : L.girders[f.climbTo];
+      var ty = girderY(tg, f.climbX);
+      f.x = f.climbX;
+      f.y += (ty > f.y ? 1 : -1) * 60 * dt;
+      if (Math.abs(f.y - ty) < 3) {
+        f.girder = f.climbTo; f.y = ty; f.state = 'roll';
+        f.dir = downhillDir(tg);
+      }
+    }
+  }
+}
+
+function updatePies(s, st, dt) {
+  var L = st.L;
+  if (!L.pieSpawn) return;
+  var speedMul = 1 + (s.loop - 1) * 0.15;
+  st.pieT -= dt;
+  if (st.pieT <= 0 && st.pies.length < 5) {
+    st.pieT = Math.max(1.2, 2.6 - (s.loop - 1) * 0.3);
+    var ps = L.pieSpawn;
+    st.pies.push({
+      x: ps.x, y: girderY(L.girders[ps.girder], ps.x),
+      girder: ps.girder, dir: -1, state: 'roll', vy: 0
+    });
+  }
+  for (var i = st.pies.length - 1; i >= 0; i--) {
+    var b = st.pies[i];
+    if (b.state === 'roll') {
+      var g = L.girders[b.girder];
+      b.x += b.dir * 62 * speedMul * dt;
+      b.y = girderY(g, b.x);
+      if ((b.dir > 0 && b.x >= g.x2 - 2) || (b.dir < 0 && b.x <= g.x1 + 2)) {
+        b.state = 'fall'; b.vy = 0;
+      }
+    } else {
+      b.vy += GRAV * dt;
+      b.y += b.vy * dt;
+      b.x += b.dir * 20 * dt;
+      var t2 = girderBelow(L, b.x, b.y - 4);
+      if (t2 && b.y >= t2.y) {
+        b.girder = t2.i; b.y = t2.y; b.state = 'roll';
+      } else if (b.y > H + 12) st.pies.splice(i, 1);
+    }
+  }
+}
+
+function updateSprings(s, st, dt) {
+  var L = st.L;
+  if (!L.spring) return;
+  st.springT -= dt;
+  if (st.springT <= 0) {
+    st.springT = L.spring.period;
+    st.springs.push({
+      x: L.spring.x0, y: L.spring.y0,
+      vx: L.spring.vx, vy: L.spring.vy,
+      landX: L.spring.landX, landY: L.spring.landY
+    });
+    s.events.push({ t: 'spring' });
+  }
+  for (var i = st.springs.length - 1; i >= 0; i--) {
+    var sp = st.springs[i];
+    sp.vy += GRAV * 0.55 * dt;
+    sp.x += sp.vx * dt;
+    sp.y += sp.vy * dt;
+    if ((sp.vy > 0 && sp.y >= sp.landY) || sp.x < -10 || sp.x > W + 10) {
+      st.springs.splice(i, 1);
+    }
+  }
+}
+
+function updateElevators(s, st, dt) {
+  var L = st.L;
+  if (!st.elevators.length) return;
+  var speed = L.elevatorSpeed * (1 + (s.loop - 1) * 0.1);
+  for (var i = 0; i < st.elevators.length; i++) {
+    var el = st.elevators[i];
+    var oldY = el.y;
+    el.y += el.dir * speed * dt;
+    var wrapped = false;
+    if (el.dir < 0 && el.y <= el.yTop) { el.y = el.yBot; wrapped = true; }
+    if (el.dir > 0 && el.y >= el.yBot) { el.y = el.yTop; wrapped = true; }
+    if (wrapped) {
+      // drop any rider at the old position (they must step off in time)
+      var p = st.player;
+      if (p.ground && p.ground.elevator === i) {
+        p.ground = null; p.elev = -1;
+        p.jumping = true; p.vy = 0; p.y = oldY; p.fallFrom = oldY;
+      }
+    }
+  }
+}
+
+function updateFoxes(s, st, dt) {
+  var L = st.L;
+  if (!st.foxes.length) return;
+  var p = st.player;
+  var speedMul = 1 + (s.loop - 1) * 0.15;
+  var pl = playerLevel(L, p);
+  for (var i = 0; i < st.foxes.length; i++) {
+    var f = st.foxes[i];
+    f.anim += dt;
+    var g = L.girders[f.girder];
+    f.x += f.dir * 52 * speedMul * dt;
+    f.y = girderY(g, f.x);
+    for (var li = 0; li < L.ladders.length; li++) {
+      var lad = L.ladders[li];
+      if (lad.broken || Math.abs(f.x - lad.x) > 3) continue;
+      if (pl > f.girder && lad.gBot === f.girder && s.rng() < 0.5) {
+        // climb up toward player
+        f.climb = { to: lad.gTop, x: lad.x, dir: -1 };
+        break;
+      }
+      if (pl < f.girder && pl >= 0 && lad.gTop === f.girder && s.rng() < 0.5) {
+        f.climb = { to: lad.gBot, x: lad.x, dir: 1 };
+        break;
+      }
+    }
+    if (f.climb) {
+      var tg = f.climb.to === 'T' ? L.top : L.girders[f.climb.to];
+      var ty = girderY(tg, f.climb.x);
+      f.x = f.climb.x;
+      f.y += f.climb.dir * 62 * dt;
+      if ((f.climb.dir < 0 && f.y <= ty) || (f.climb.dir > 0 && f.y >= ty)) {
+        f.girder = f.climb.to; f.y = ty; f.climb = null;
+        f.dir = downhillDir(tg);
+      }
+    } else {
+      if (f.x > g.x2 - 4) { f.x = g.x2 - 4; f.dir = -1; }
+      if (f.x < g.x1 + 4) { f.x = g.x1 + 4; f.dir = 1; }
+    }
+  }
+}
+
+/* ---------------- collisions & scoring ---------------- */
+function overlap(ax1, ay1, ax2, ay2, bx1, by1, bx2, by2) {
+  return ax1 < bx2 && ax2 > bx1 && ay1 < by2 && ay2 > by1;
+}
+function playerBox(p) {
+  return [p.x - PLAYER_W / 2, p.y - PLAYER_H, p.x + PLAYER_W / 2, p.y];
+}
+
+function checkCollisions(s, st) {
+  var p = st.player;
+  if (p.dead || st.clearT > 0) return;
+  var pb = playerBox(p);
+
+  function hitEnemy(ex, ey, ew, eh, kind) {
+    if (!overlap(pb[0], pb[1], pb[2], pb[3], ex - ew / 2, ey - eh, ex + ew / 2, ey)) return;
+    if (p.hammerT > 0 && (kind === 'barrel' || kind === 'fireball')) {
+      // smashed!
+      addScore(s, kind === 'barrel' ? PTS_BARREL_SMASH : PTS_FIREBALL_SMASH);
+      s.events.push({ t: 'smash', kind: kind });
+      return kind; // signal removal
+    }
+    killPlayer(s, st, kind);
+    return 'dead';
+  }
+
+  var i, r;
+  for (i = st.barrels.length - 1; i >= 0; i--) {
+    var b = st.barrels[i];
+    r = hitEnemy(b.x, b.y, 12, 12, 'barrel');
+    if (r === 'barrel') st.barrels.splice(i, 1);
+    if (r === 'dead') return;
+    // jump-over scoring: airborne, passing above the barrel
+    if (p.jumping && !p.dead) {
+      var key = 'b' + i;
+      if (!st.scoredJump[key] && Math.abs(p.x - b.x) < 9 && p.y < b.y - 10) {
+        st.scoredJump[key] = true;
+        addScore(s, PTS_BARREL_JUMP);
+        s.events.push({ t: 'jumpOver' });
+      }
+    }
+  }
+  for (i = st.fireballs.length - 1; i >= 0; i--) {
+    var f = st.fireballs[i];
+    r = hitEnemy(f.x, f.y, 12, 12, 'fireball');
+    if (r === 'fireball') st.fireballs.splice(i, 1);
+    if (r === 'dead') return;
+    if (p.jumping && !p.dead) {
+      var key = 'f' + i;
+      if (!st.scoredJump[key] && Math.abs(p.x - f.x) < 9 && p.y < f.y - 10) {
+        st.scoredJump[key] = true;
+        addScore(s, PTS_BARREL_JUMP);
+        s.events.push({ t: 'jumpOver' });
+      }
+    }
+  }
+  for (i = st.pies.length - 1; i >= 0; i--) {
+    var pe = st.pies[i];
+    if (overlap(pb[0], pb[1], pb[2], pb[3], pe.x - 7, pe.y - 8, pe.x + 7, pe.y)) {
+      killPlayer(s, st, 'pie'); return;
+    }
+  }
+  for (i = st.springs.length - 1; i >= 0; i--) {
+    var sp = st.springs[i];
+    if (overlap(pb[0], pb[1], pb[2], pb[3], sp.x - 6, sp.y - 12, sp.x + 6, sp.y)) {
+      killPlayer(s, st, 'spring'); return;
+    }
+  }
+  for (i = 0; i < st.foxes.length; i++) {
+    var fx = st.foxes[i];
+    r = hitEnemy(fx.x, fx.y, 12, 12, 'fox');
+    if (r === 'dead') return;
+    // foxes can't be hammered (no hammer on stage 4) — hitEnemy handles via kind
+  }
+
+  // stage 4: all rivets -> Bruno falls
+  var L = st.L;
+  if (L.rivets && st.brunoFall === 0) {
+    var all = st.rivets.every(function (rv) { return rv.taken; });
+    if (all) {
+      st.brunoFall = 0.001;
+      s.events.push({ t: 'brunoFall' });
+    }
+  }
+  if (st.brunoFall > 0) {
+    st.brunoFall += 1 / 60;
+    if (st.brunoFall > 1.8) stageClear(s, st);
+  }
+}
+
+/* ---------------- main update ---------------- */
+function update(s, input, dt) {
+  s.events = [];
+  input = input || {};
+  // edge detection for jump & pause
+  input._prevJump = !!s._prevJumpIn;
+  s._prevJumpIn = !!input.jump;
+  var pausePressed = !!input.pause && !s._prevPause;
+  s._prevPause = !!input.pause;
+
+  if (s.screen === 'title') {
+    if (input.jump) { resetRun(s); startStage(s, 0); }
+    return;
+  }
+  if (s.screen === 'over') {
+    if (input.jump) { s.screen = 'title'; }
+    return;
+  }
+  if (s.screen !== 'play') return;
+  var st = s.stageState;
+
+  if (pausePressed) { s.paused = !s.paused; s.events.push({ t: 'pause', on: s.paused }); }
+  if (s.paused) return;
+
+  s.t += dt;
+  if (st.brunoT > 0) st.brunoT -= dt;
+  if (s.msgT > 0) s.msgT -= dt;
+
+  // bonus countdown
+  s.bonusT += dt;
+  if (s.bonusT >= 1.6) {
+    s.bonusT = 0;
+    if (s.bonus > 0) s.bonus -= 100;
+  }
+
+  // death sequencing
+  if (st.player.dead) {
+    st.deadT += dt;
+    updateBarrels(s, st, dt); // world keeps moving behind death anim
+    if (st.deadT > 1.7) {
+      s.lives--;
+      s.events.push({ t: 'lifeLost', lives: s.lives });
+      if (s.lives > 0) startStage(s, s.stage);
+      else s.screen = 'over';
+    }
+    return;
+  }
+
+  // stage clear sequencing
+  if (st.clearT > 0) {
+    st.clearT += dt;
+    if (st.clearT > 2.6) {
+      if (s.stage >= 3) {
+        s.stage = 0; s.loop++;
+        s.msg = 'LOOP ' + s.loop + ' — FASTER!';
+      } else {
+        s.stage++;
+      }
+      startStage(s, s.stage);
+    }
+    return;
+  }
+
+  updateElevators(s, st, dt);
+  updatePlayer(s, st, input, dt);
+  updateBarrels(s, st, dt);
+  updateFireballs(s, st, dt);
+  updatePies(s, st, dt);
+  updateSprings(s, st, dt);
+  updateFoxes(s, st, dt);
+  checkCollisions(s, st);
+}
+
+function resetRun(s) {
+  s.stage = 0; s.loop = 1; s.score = 0; s.lives = 3;
+  s.extraGiven = false; s.msg = ''; s.msgT = 0;
+}
+
+/* ---------------- exports ---------------- */
+return {
+  W: W, H: H,
+  GRAV: GRAV, JUMP_V: JUMP_V, WALK: WALK, CLIMB: CLIMB,
+  FALL_DEATH: FALL_DEATH,
+  PTS_BARREL_JUMP: PTS_BARREL_JUMP,
+  PTS_BARREL_SMASH: PTS_BARREL_SMASH,
+  PTS_FIREBALL_SMASH: PTS_FIREBALL_SMASH,
+  PTS_RIVET: PTS_RIVET,
+  newGame: newGame,
+  startStage: startStage,
+  update: update,
+  girderY: girderY,
+  addScore: addScore,
+  _ladderSpan: ladderSpan,
+  _pickDropX: pickDropX
+};
+})();
+if (typeof module !== 'undefined' && module.exports) module.exports = BK;
+
+/* ===== browser.js (sprites, audio, input, renderer) ===== */
+/* ============================================================
+   BARREL KING — browser layer: sprites, audio, input, renderer
+   All art + music original. No Nintendo assets. No external files.
+   Depends on BK (logic.js) loaded before this script.
+   ============================================================ */
+(function () {
+'use strict';
+
+/* ================= SPRITES (original pixel art) ================= */
+var PAL = {
+  k: '#101018', s: '#ffcf9e', b: '#2b5cff', r: '#e83a3a',
+  w: '#f4f4f4', y: '#ffd23e', B: '#6e421e', t: '#d9a066',
+  o: '#ff7b24', g: '#9aa0a8', G: '#4c515a', p: '#ff7bac',
+  c: '#41d8e8', n: '#a06a35', e: '#20242e', d: '#3a2a1a'
+};
+
+var SPRITES = {
+  jackStand: [
+    '....kkkk....',
+    '...krrrrk...',
+    '...kssssk...',
+    '...ksesek...',
+    '....kssk....',
+    '...kbbbbk...',
+    '..ksbbbbsk..',
+    '..ksbbbbsk..',
+    '...kbbbbk...',
+    '...kddddk...',
+    '...kddkdk...',
+    '...kddkdk...',
+    '...kddkdk...',
+    '...kkk.kk...',
+    '...kwwk.kw..',
+    '...kkk..kk..'
+  ],
+  jackJump: [
+    '....kkkk....',
+    '...krrrrk...',
+    '...kssssk...',
+    '...ksesek...',
+    '....kssk....',
+    '..skbbbbks..',
+    '..skbbbbks..',
+    '...kbbbbk...',
+    '...kddddk...',
+    '..kddkkddk..',
+    '..kdk..kdk..',
+    '..kk....kk..',
+    '............',
+    '............',
+    '............',
+    '............'
+  ],
+  jackClimb1: [
+    '....kkkk....',
+    '...kssssk...',
+    '...kssssk...',
+    '....kssk....',
+    '..kkbbbbkk..',
+    '.ks.kbbbk.sk',
+    '.ks.kbbbk.sk',
+    '....kbbbk...',
+    '....kdddk...',
+    '....kdddk...',
+    '....kdkdk...',
+    '....kdkdk...',
+    '....kk.kk...',
+    '............',
+    '............',
+    '............'
+  ],
+  jackClimb2: [
+    '....kkkk....',
+    '...kssssk...',
+    '...kssssk...',
+    '....kssk....',
+    '..kkbbbbkk..',
+    '....kbbbk...',
+    '.ks.kbbbk.sk',
+    '.ks.kbbbk.sk',
+    '....kbbbk...',
+    '....kdddk...',
+    '....kdddk...',
+    '....kdkdk...',
+    '....kdkdk...',
+    '....kk.kk...',
+    '............',
+    '............'
+  ],
+  jackDead: [
+    '....kkkk....',
+    '...krrrrk...',
+    '...kssssk...',
+    '...kxssxk...',
+    '....kssk....',
+    '...kbbbbk...',
+    '..ksbbbbsk..',
+    '..ksbbbbsk..',
+    '...kbbbbk...',
+    '...kddddk...',
+    '....kddk....',
+    '....kddk....',
+    '...kk..kk...',
+    '............',
+    '............',
+    '............'
+  ],
+  pearl: [
+    '...kyyyyk...',
+    '...kyyyyk...',
+    '..kyssssyk..',
+    '..kysksyk...',
+    '..kysssy....',
+    '...ksssk....',
+    '...kpppk....',
+    '..kpppppk...',
+    '..kpppppk...',
+    '.skpppppks..',
+    '.skpppppks..',
+    '...kpppk....',
+    '..kpppppk...',
+    '..kpppppk...',
+    '..kkk.kkk...',
+    '............'
+  ],
+  barrel: [
+    '...kkkkkk...',
+    '.kkBBBBBBkk.',
+    'kBnnnnnnnnBk',
+    'kBnkkkkkknBk',
+    'kBnknnnnknBk',
+    'kBnknnnnknBk',
+    'kBnnnnnnnnBk',
+    'kBnnkkkknnBk',
+    'kBnknnnnknBk',
+    'kBnknnnnknBk',
+    'kBnnnnnnnnBk',
+    '.kkBBBBBBkk.',
+    '...kkkkkk...'
+  ],
+  fire1: [
+    '....kkkk....',
+    '..kkooookk..',
+    '.kooyyyyyok.',
+    '.koyyyyyyok.',
+    'koyykwkwyyok',
+    'koyyyyyyyyok',
+    '.koyyyyyyok.',
+    '.kooyyyyyok.',
+    '..kkooookk..',
+    '....kkkk....',
+    '............',
+    '............'
+  ],
+  fire2: [
+    '....kkkk....',
+    '..kkooookk..',
+    '.kooyyyyyok.',
+    'koyyyyyyyyok',
+    'koyykwkwyyok',
+    'koyyyyyyyyok',
+    'koyyyyyyyyok',
+    '.koyyyyyyok.',
+    '.kooyyyyyok.',
+    '..kkooookk..',
+    '....kkkk....',
+    '............'
+  ],
+  fox1: [
+    '............',
+    '.kk......kk.',
+    '.kook..kook.',
+    '.koookkkook.',
+    '..kooooook..',
+    '..kokwkwok..',
+    '...koooo....',
+    '...kooookk..',
+    '....koookw..',
+    '....kkkkk...',
+    '............',
+    '............'
+  ],
+  fox2: [
+    '............',
+    '.kk......kk.',
+    '.kook..kook.',
+    '.koookkkook.',
+    '..kooooook..',
+    '..kokwkwok..',
+    '...koooo....',
+    '..kkooook...',
+    '.wkooooook..',
+    '...kkkkk....',
+    '............',
+    '............'
+  ],
+  pie: [
+    '..kkkkkkkkkk..',
+    '.kggggggggggk.',
+    '.kggggggggggk.',
+    '.kGGGGGGGGGGk.',
+    '..kGGGGGGGGk..',
+    '...kkkkkkkk...',
+    '..............',
+    '..............'
+  ],
+  hammer: [
+    '............',
+    '..kkkkkk....',
+    '.kwwwwwwk...',
+    '.kwkwwkwk...',
+    '.kwwwwwwk...',
+    '..kkkkkk....',
+    '.....kk.....',
+    '....knk.....',
+    '....knk.....',
+    '....knk.....',
+    '....knk.....',
+    '....kk......',
+    '............',
+    '............'
+  ],
+  rivet: [
+    '..kkkk..',
+    '.kggggk.',
+    'kggwgggk',
+    'kgwwwwgk',
+    'kggwgggk',
+    '.kggggk.',
+    '..kkkk..'
+  ],
+  drum: [
+    '....kkkkkkkk....',
+    '..kkGGGGGGGGkk..',
+    '.kGggggggggggGk.',
+    '.kggkkkkkkkkggGk'.slice(0, 16),
+    '.kggkrrrrrkggGk.',
+    '.kggkrrrrrkggGk.',
+    '.kggkkkkkkkkggGk'.slice(0, 16),
+    '.kgggggggggggGk.',
+    '.kggkkkkkkkkggGk'.slice(0, 16),
+    '.kggkrrrrrkggGk.',
+    '.kggkrrrrrkggGk.',
+    '.kggkkkkkkkkggGk'.slice(0, 16),
+    '.kgggggggggggGk.',
+    '.kgggggggggggGk.',
+    '..kkGGGGGGGGkk..',
+    '....kkkkkkkk....'
+  ]
+};
+
+// Bruno the ape — bigger, drawn with code-assisted map (24x20)
+SPRITES.bruno = [
+  '........kkkkkkkk........',
+  '......kkBBBBBBBBkk......',
+  '.....kBBBBBBBBBBBBk.....',
+  '....kBBkkBBBBBBkkBBk....',
+  '....kBkttkBBBBkttkBk....',
+  '....kBBtetkBBketkBBk....',
+  '....kBBkttkBBkttkBBk....',
+  '.....kBBBkttttkBBBk.....',
+  '.....kBBBBttttBBBBk.....',
+  '....kBBBBBkttkBBBBBk....',
+  '...kBBBBBBkkkkBBBBBBk...',
+  '..kBBBBBkkttttkkBBBBBk..',
+  '..kBBBkttttttttttkBBBk..',
+  '..kBBkttttttttttttkBBk..',
+  '..kBktttktttktttkBBk....',
+  '..kBktttktttktttkBBk....',
+  '...kBBttttttttttttBBk...',
+  '...kBBttttttttttttBBk...',
+  '....kBBBBBBBBBBBBk......',
+  '......kkkkkkkkkkkk......'
+];
+SPRITES.brunoThrow = SPRITES.bruno.map(function (row, i) {
+  if (i >= 9 && i <= 12) return 'kBBBBBBkkttttkkBBBBBBk...'.slice(0, 24);
+  return row;
+});
+
+var spriteCache = {};
+function getSprite(name) {
+  if (spriteCache[name]) return spriteCache[name];
+  var map = SPRITES[name];
+  var h = map.length, w = map[0].length;
+  var c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  var g = c.getContext('2d');
+  for (var y = 0; y < h; y++) {
+    for (var x = 0; x < w; x++) {
+      var ch = map[y][x] || '.';
+      if (ch === '.' || ch === ' ') continue;
+      g.fillStyle = PAL[ch] || '#ff00ff';
+      g.fillRect(x, y, 1, 1);
+    }
+  }
+  spriteCache[name] = c;
+  return c;
+}
+
+/* ================= AUDIO (Web Audio, all original synth SFX) ================= */
+var Audio2 = (function () {
+  var ctx = null, master = null, muted = false;
+  function ensure() {
+    if (ctx) { if (ctx.state === 'suspended') ctx.resume(); return true; }
+    try {
+      var AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return false;
+      ctx = new AC();
+      master = ctx.createGain();
+      master.gain.value = 0.5;
+      master.connect(ctx.destination);
+      return true;
+    } catch (e) { return false; }
+  }
+  function tone(f0, f1, dur, type, vol, delay) {
+    if (muted || !ensure()) return;
+    var t = ctx.currentTime + (delay || 0);
+    var o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = type || 'square';
+    o.frequency.setValueAtTime(f0, t);
+    if (f1 && f1 !== f0) o.frequency.exponentialRampToValueAtTime(Math.max(20, f1), t + dur);
+    g.gain.setValueAtTime(vol || 0.25, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    o.connect(g); g.connect(master);
+    o.start(t); o.stop(t + dur + 0.02);
+  }
+  function noise(dur, vol, delay) {
+    if (muted || !ensure()) return;
+    var t = ctx.currentTime + (delay || 0);
+    var len = Math.floor(ctx.sampleRate * dur);
+    var buf = ctx.createBuffer(1, len, ctx.sampleRate);
+    var d = buf.getChannelData(0);
+    for (var i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
+    var src = ctx.createBufferSource(); src.buffer = buf;
+    var g = ctx.createGain(); g.gain.value = vol || 0.3;
+    src.connect(g); g.connect(master);
+    src.start(t);
+  }
+  // original compositions — simple chiptune motifs
+  var SFX = {
+    jump: function () { tone(280, 640, 0.13, 'square', 0.22); },
+    bounce: function () { tone(150, 90, 0.07, 'triangle', 0.25); },
+    smash: function () { noise(0.12, 0.35); tone(220, 60, 0.1, 'sawtooth', 0.2); },
+    rivet: function () { tone(1150, 1400, 0.07, 'square', 0.18); },
+    jumpOver: function () { tone(880, 990, 0.06, 'square', 0.15); },
+    hammer: function () { tone(520, 520, 0.07, 'square', 0.2); tone(780, 780, 0.07, 'square', 0.2, 0.08); },
+    spring: function () { tone(180, 520, 0.16, 'sine', 0.2); },
+    throwS: function () { noise(0.06, 0.15); },
+    fireSpawn: function () { tone(90, 160, 0.12, 'sawtooth', 0.18); },
+    death: function () {
+      var n = [392, 330, 262, 196, 147];
+      for (var i = 0; i < n.length; i++) tone(n[i], n[i] * 0.97, 0.14, 'square', 0.22, i * 0.13);
+    },
+    clear: function () {
+      var n = [523, 659, 784, 1047, 784, 1047];
+      for (var i = 0; i < n.length; i++) tone(n[i], n[i], 0.12, 'square', 0.2, i * 0.11);
+    },
+    extra: function () {
+      var n = [660, 880, 660, 880, 1320];
+      for (var i = 0; i < n.length; i++) tone(n[i], n[i], 0.09, 'triangle', 0.22, i * 0.09);
+    },
+    title: function () {
+      var n = [262, 392, 523, 392, 523, 659];
+      for (var i = 0; i < n.length; i++) tone(n[i], n[i], 0.13, 'square', 0.16, i * 0.12);
+    }
+  };
+  return {
+    sfx: SFX,
+    toggleMute: function () { muted = !muted; return muted; },
+    ensure: ensure
+  };
+})();
+
+/* ================= INPUT (keyboard + touch) ================= */
+var Input = (function () {
+  var st = { left: false, right: false, up: false, down: false, jump: false, pause: false };
+  var keymap = {
+    ArrowLeft: 'left', KeyA: 'left',
+    ArrowRight: 'right', KeyD: 'right',
+    ArrowUp: 'up', KeyW: 'up',
+    ArrowDown: 'down', KeyS: 'down',
+    Space: 'jump', KeyZ: 'jump',
+    KeyP: 'pause'
+  };
+  window.addEventListener('keydown', function (e) {
+    var k = keymap[e.code];
+    if (k) { st[k] = true; e.preventDefault(); Audio2.ensure(); }
+    if (e.code === 'KeyM') { mutedFlag = Audio2.toggleMute(); }
+    if (e.code === 'Enter') { st.jump = true; Audio2.ensure(); }
+  });
+  window.addEventListener('keyup', function (e) {
+    var k = keymap[e.code];
+    if (k) { st[k] = false; e.preventDefault(); }
+    if (e.code === 'Enter') st.jump = false;
+  });
+  var mutedFlag = false;
+  function bindBtn(id, name) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    var on = function (e) { e.preventDefault(); st[name] = true; Audio2.ensure(); };
+    var off = function (e) { e.preventDefault(); st[name] = false; };
+    el.addEventListener('pointerdown', on);
+    el.addEventListener('pointerup', off);
+    el.addEventListener('pointercancel', off);
+    el.addEventListener('pointerleave', off);
+    el.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+  }
+  return {
+    state: st,
+    isMuted: function () { return mutedFlag; },
+    bindTouch: function () {
+      bindBtn('btn-left', 'left');
+      bindBtn('btn-right', 'right');
+      bindBtn('btn-jump', 'jump');
+    },
+    snapshot: function () {
+      return { left: st.left, right: st.right, up: st.up, down: st.down, jump: st.jump, pause: st.pause };
+    }
+  };
+})();
+
+/* ================= RENDERER ================= */
+var canvas = document.getElementById('game');
+var ctx = canvas.getContext('2d');
+ctx.imageSmoothingEnabled = false;
+
+var DT = 1 / 60;
+var S = BK.newGame(loadHi(), (Date.now() & 0xffffffff) >>> 0);
+var lastSt = null, bannerT = 0, prevLives = 3;
+
+function loadHi() {
+  try { return parseInt(localStorage.getItem('barrelKingHi') || '0', 10) || 0; }
+  catch (e) { return 0; }
+}
+function saveHi(v) {
+  try { localStorage.setItem('barrelKingHi', String(v)); } catch (e) {}
+}
+
+function fit() {
+  var touchH = 120;
+  var ww = window.innerWidth, wh = window.innerHeight - touchH;
+  var s = Math.min(ww / BK.W, wh / BK.H);
+  var si = Math.floor(s);
+  var scale = si >= 2 ? si : s;
+  scale = Math.max(0.5, scale);
+  canvas.style.width = Math.floor(BK.W * scale) + 'px';
+  canvas.style.height = Math.floor(BK.H * scale) + 'px';
+}
+window.addEventListener('resize', fit);
+
+function txt(str, x, y, color, size, align) {
+  ctx.fillStyle = color || '#fff';
+  ctx.font = (size || 8) + 'px monospace';
+  ctx.textAlign = align || 'left';
+  ctx.textBaseline = 'top';
+  ctx.fillText(str, x, y);
+}
+
+function drawGirder(g) {
+  ctx.strokeStyle = '#7e2f47';
+  ctx.lineWidth = 7;
+  ctx.beginPath(); ctx.moveTo(g.x1, g.y1); ctx.lineTo(g.x2, g.y2); ctx.stroke();
+  ctx.strokeStyle = '#ef6a92';
+  ctx.lineWidth = 4;
+  ctx.beginPath(); ctx.moveTo(g.x1, g.y1); ctx.lineTo(g.x2, g.y2); ctx.stroke();
+  ctx.fillStyle = '#ffd23e';
+  for (var x = g.x1 + 6; x < g.x2; x += 16) {
+    var y = BK.girderY(g, x);
+    ctx.fillRect(x - 1, y - 1, 2, 2);
+  }
+}
+function drawLadder(x, yTop, yBot) {
+  ctx.fillStyle = '#41d8e8';
+  ctx.fillRect(x - 4, yTop, 2, yBot - yTop);
+  ctx.fillRect(x + 2, yTop, 2, yBot - yTop);
+  ctx.fillStyle = '#1e7f96';
+  for (var y = yTop + 4; y < yBot - 2; y += 6) ctx.fillRect(x - 4, y, 8, 2);
+}
+function drawSprite(name, x, y, flip) {
+  var img = getSprite(name);
+  if (flip) {
+    ctx.save();
+    ctx.translate(Math.round(x) + img.width, Math.round(y));
+    ctx.scale(-1, 1);
+    ctx.drawImage(img, 0, 0);
+    ctx.restore();
+  } else {
+    ctx.drawImage(img, Math.round(x), Math.round(y));
+  }
+}
+
+function drawBruno(s, st) {
+  var L = st.L, bx = L.bruno.x;
+  var gy = BK.girderY(L.top, bx);
+  var spr = st.brunoT > 0 ? 'brunoThrow' : 'bruno';
+  if (st.brunoFall > 0) {
+    var fy = gy + st.brunoFall * 130;
+    ctx.save();
+    ctx.translate(bx, fy - 10);
+    ctx.rotate(st.brunoFall * 2.5);
+    var img = getSprite(spr);
+    ctx.drawImage(img, -12, -10);
+    ctx.restore();
+    return;
+  }
+  drawSprite(spr, bx - 12, gy - 20, false);
+}
+
+function drawPearl(L) {
+  var px = L.pearl.x;
+  var py = L.pearl.girder === 'top' ? BK.girderY(L.top, px) :
+           L.pearl.plat === 'L' ? BK.girderY(L.topL, px) : BK.girderY(L.top, px);
+  drawSprite('pearl', px - 6, py - 16, false);
+  var bob = Math.sin(Date.now() / 300) * 2;
+  txt('HELP!', px + 10, py - 30 + bob, '#ff7bac', 8, 'left');
+}
+
+function drawPlayer(p) {
+  var spr = 'jackStand';
+  if (p.dead) spr = 'jackDead';
+  else if (p.jumping) spr = 'jackJump';
+  else if (p.climbing) spr = (Math.floor(p.anim * 8) % 2 === 0) ? 'jackClimb1' : 'jackClimb2';
+  else if (p.vx !== 0) spr = 'jackStand';
+  drawSprite(spr, p.x - 6, p.y - 16, p.dir < 0);
+  if (p.hammerT > 0) {
+    var hx = p.x + p.dir * 10, hy = p.y - 14;
+    ctx.save();
+    ctx.translate(hx, hy);
+    ctx.rotate(Math.sin(Date.now() / 60) * 0.6);
+    var img = getSprite('hammer');
+    ctx.drawImage(img, -6, -7);
+    ctx.restore();
+  }
+}
+
+function drawSpring(sp) {
+  var x = sp.x, y = sp.y;
+  ctx.strokeStyle = '#c9d2dc';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(x - 5, y - 2); ctx.lineTo(x + 5, y - 2);
+  ctx.moveTo(x - 5, y - 10); ctx.lineTo(x + 5, y - 10);
+  ctx.stroke();
+  ctx.beginPath();
+  var yy = y - 2;
+  ctx.moveTo(x - 4, yy);
+  for (var i = 0; i < 4; i++) {
+    yy -= 2;
+    ctx.lineTo(x + (i % 2 === 0 ? 4 : -4), yy);
+  }
+  ctx.stroke();
+}
+
+function drawHUD(s) {
+  txt('SCORE ' + String(s.score).padStart(6, '0'), 8, 4, '#fff', 8);
+  txt('HI ' + String(Math.max(s.hi, s.score)).padStart(6, '0'), 96, 4, '#ffd23e', 8);
+  var st = s.stageState;
+  if (st) {
+    txt('BONUS ' + s.bonus, 8, 236, '#41d8e8', 8);
+    txt((s.stage + 1) + '-' + s.loop + ' ' + st.L.name, 150, 236, '#9aa0a8', 8);
+    for (var i = 0; i < s.lives; i++) drawSprite('jackStand', 200 + i * 12, 14, false);
+  }
+  if (Input.isMuted()) txt('MUTED', 196, 4, '#666', 8);
+}
+
+function drawPlay(s, st) {
+  var L = st.L;
+  // girders
+  L.girders.forEach(drawGirder);
+  if (L.top) drawGirder(L.top);
+  if (L.topL) drawGirder(L.topL);
+  if (L.topR) drawGirder(L.topR);
+  // ladders
+  L.ladders.forEach(function (lad) {
+    var sp = BK._ladderSpan(L, lad);
+    drawLadder(lad.x, sp.yTop, sp.yBot);
+    if (lad.broken) {
+      ctx.fillStyle = '#0a0a12';
+      ctx.fillRect(lad.x - 4, sp.yTop - 4, 8, 4);
+    }
+  });
+  // oil drum
+  if (L.oilDrum) {
+    var od = L.oilDrum, ody = BK.girderY(L.girders[od.girder], od.x);
+    drawSprite('drum', od.x - 8, ody - 16, false);
+  }
+  // hammers
+  st.hammers.forEach(function (hm) {
+    if (!hm.taken) {
+      var bob = Math.sin(Date.now() / 250) * 2;
+      drawSprite('hammer', hm.x - 6, hm.y - 7 + bob, false);
+    }
+  });
+  // rivets
+  st.rivets.forEach(function (rv) {
+    if (!rv.taken) drawSprite('rivet', rv.x - 4, rv.y - 7, false);
+  });
+  // elevators
+  st.elevators.forEach(function (el) {
+    ctx.fillStyle = '#7e2f47';
+    ctx.fillRect(el.x - el.w / 2, el.y - 3, el.w, 6);
+    ctx.fillStyle = '#ffd23e';
+    for (var x = el.x - el.w / 2 + 3; x < el.x + el.w / 2 - 2; x += 8)
+      ctx.fillRect(x, el.y - 1, 4, 2);
+  });
+  // bruno + pearl
+  drawBruno(s, st);
+  if (L.pearl) drawPearl(L);
+  // enemies
+  st.barrels.forEach(function (b) {
+    ctx.save();
+    ctx.translate(b.x, b.y - 6);
+    ctx.rotate(b.anim * 5);
+    var img = getSprite('barrel');
+    ctx.drawImage(img, -6, -6);
+    ctx.restore();
+  });
+  st.fireballs.forEach(function (f) {
+    drawSprite(Math.floor(f.anim * 6) % 2 ? 'fire1' : 'fire2', f.x - 6, f.y - 12, false);
+  });
+  st.foxes.forEach(function (f) {
+    drawSprite(Math.floor(f.anim * 6) % 2 ? 'fox1' : 'fox2', f.x - 6, f.y - 12, f.dir < 0);
+  });
+  st.pies.forEach(function (pe) {
+    drawSprite('pie', pe.x - 7, pe.y - 8, false);
+  });
+  st.springs.forEach(drawSpring);
+  // player
+  drawPlayer(st.player);
+  // messages
+  if (s.msgT > 0) txt(s.msg, BK.W / 2, 120, '#ffd23e', 10, 'center');
+  if (st.clearT > 0) {
+    txt('STAGE CLEAR!', BK.W / 2, 110, '#7dff8a', 12, 'center');
+    txt('BONUS +' + s._lastBonus, BK.W / 2, 130, '#fff', 9, 'center');
+  }
+  if (bannerT > 0 && st.clearT === 0) {
+    txt('STAGE ' + (s.stage + 1) + ' — ' + L.name, BK.W / 2, 108, '#fff', 11, 'center');
+    txt('HOW HIGH CAN YOU CLIMB?', BK.W / 2, 126, '#41d8e8', 8, 'center');
+  }
+  if (s.paused) {
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.fillRect(0, 0, BK.W, BK.H);
+    txt('PAUSED', BK.W / 2, 120, '#fff', 14, 'center');
+  }
+}
+
+function drawTitle(s) {
+  ctx.fillStyle = '#0a0a12';
+  ctx.fillRect(0, 0, BK.W, BK.H);
+  txt('BARREL', BK.W / 2, 52, '#ef6a92', 28, 'center');
+  txt('KING', BK.W / 2, 84, '#ef6a92', 28, 'center');
+  drawSprite('bruno', BK.W / 2 - 42, 128, false);
+  drawSprite('jackStand', BK.W / 2 + 22, 140, true);
+  txt('HOW HIGH CAN YOU CLIMB?', BK.W / 2, 168, '#41d8e8', 8, 'center');
+  txt('HI-SCORE  ' + String(Math.max(s.hi, 0)).padStart(6, '0'), BK.W / 2, 188, '#ffd23e', 9, 'center');
+  if (Math.floor(Date.now() / 500) % 2 === 0)
+    txt('PRESS SPACE OR TAP TO START', BK.W / 2, 210, '#fff', 8, 'center');
+  txt('ARROWS MOVE · SPACE JUMP · P PAUSE · M MUTE', BK.W / 2, 232, '#666', 7, 'center');
+  txt('CWI ARCADE', BK.W / 2, 244, '#444', 7, 'center');
+}
+
+function drawOver(s) {
+  ctx.fillStyle = 'rgba(0,0,0,0.75)';
+  ctx.fillRect(0, 0, BK.W, BK.H);
+  txt('GAME OVER', BK.W / 2, 100, '#e83a3a', 18, 'center');
+  txt('SCORE ' + String(s.score).padStart(6, '0'), BK.W / 2, 130, '#fff', 10, 'center');
+  txt('HI    ' + String(Math.max(s.hi, s.score)).padStart(6, '0'), BK.W / 2, 146, '#ffd23e', 10, 'center');
+  if (Math.floor(Date.now() / 500) % 2 === 0)
+    txt('PRESS SPACE OR TAP TO PLAY AGAIN', BK.W / 2, 176, '#fff', 8, 'center');
+}
+
+function render() {
+  ctx.fillStyle = '#0a0a12';
+  ctx.fillRect(0, 0, BK.W, BK.H);
+  if (S.screen === 'title') { drawTitle(S); return; }
+  if (S.screen === 'over') {
+    if (S.stageState) drawPlay(S, S.stageState);
+    drawOver(S);
+    return;
+  }
+  drawHUD(S);
+  if (S.stageState) drawPlay(S, S.stageState);
+}
+
+/* ================= EVENTS -> SFX ================= */
+function drainEvents() {
+  var evs = S.events || [];
+  for (var i = 0; i < evs.length; i++) {
+    var e = evs[i];
+    switch (e.t) {
+      case 'jump': Audio2.sfx.jump(); break;
+      case 'bounce': Audio2.sfx.bounce(); break;
+      case 'smash': Audio2.sfx.smash(); break;
+      case 'rivet': Audio2.sfx.rivet(); break;
+      case 'jumpOver': Audio2.sfx.jumpOver(); break;
+      case 'hammer': Audio2.sfx.hammer(); break;
+      case 'spring': Audio2.sfx.spring(); break;
+      case 'throw': Audio2.sfx.throwS(); break;
+      case 'fireSpawn': Audio2.sfx.fireSpawn(); break;
+      case 'death': Audio2.sfx.death(); break;
+      case 'brunoFall': Audio2.sfx.smash(); setTimeout(function () { Audio2.sfx.clear(); }, 600); break;
+      case 'clear': Audio2.sfx.clear(); break;
+      case 'lifeLost':
+        if (e.lives > prevLives) Audio2.sfx.extra();
+        prevLives = e.lives;
+        break;
+    }
+  }
+}
+
+/* ================= MAIN LOOP ================= */
+var last = 0, acc = 0, firstFrame = true;
+function frame(t) {
+  requestAnimationFrame(frame);
+  if (firstFrame) { last = t; firstFrame = false; }
+  var dt = Math.min(0.1, (t - last) / 1000);
+  last = t;
+  acc += dt;
+  var steps = 0;
+  while (acc >= DT && steps < 5) {
+    var before = S.screen;
+    BK.update(S, Input.snapshot(), DT);
+    if (S.stageState !== lastSt) {
+      lastSt = S.stageState;
+      bannerT = 1.6;
+      if (S.screen === 'play' && before === 'title') { Audio2.sfx.title(); prevLives = 3; }
+    }
+    if (S.score > S.hi) { S.hi = S.score; saveHi(S.hi); }
+    drainEvents();
+    acc -= DT;
+    steps++;
+  }
+  if (bannerT > 0) bannerT -= dt;
+  render();
+}
+
+/* ================= BOOT ================= */
+canvas.addEventListener('pointerdown', function () {
+  Audio2.ensure();
+  if (S.screen === 'title' || S.screen === 'over') {
+    Input.state.jump = true;
+    setTimeout(function () { Input.state.jump = false; }, 120);
+  }
+});
+Input.bindTouch();
+fit();
+requestAnimationFrame(frame);
+
+})();
+
+</script>
+</body>
+</html>
