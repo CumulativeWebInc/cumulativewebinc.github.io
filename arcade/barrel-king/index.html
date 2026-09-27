@@ -1844,6 +1844,45 @@ try {
 fit();
 requestAnimationFrame(frame);
 
+/* TEMP DEBUG HOOK (query-gated, ?dbg) — REMOVE BEFORE RELEASE */
+try {
+  var _q = location.search || '';
+  if (_q.indexOf('dbg') >= 0) {
+    window.__BKDBG = { S: function () { return S; }, BK: BK, Input: Input };
+    var _log = document.createElement('div');
+    _log.id = 'dbglog';
+    _log.style.cssText = 'position:fixed;top:0;left:0;z-index:9999;background:rgba(0,0,0,.85);color:#0f0;font:10px/1.4 monospace;max-width:100%;white-space:pre-wrap;pointer-events:none;';
+    document.body.appendChild(_log);
+    var _dlog = function (m) { _log.textContent += m + '\n'; };
+    window.onerror = function (m, s, l) { _dlog('ERR: ' + m + ' @line ' + l); };
+    _dlog('hook live, screen=' + S.screen);
+    if (_q.indexOf('autoclimb') >= 0) {
+      setTimeout(function () { Input.state.jump = true; setTimeout(function () { Input.state.jump = false; }, 150); }, 800);
+      setTimeout(function () {
+        try {
+          var st = S.stageState, L = st.L, p = st.player, lad = null;
+          L.ladders.forEach(function (x) { if (x.gTop === 'top' && !x.broken) lad = x; });
+          var sp = BK._ladderSpan(L, lad);
+          p.x = lad.x; p.y = sp.yBot; p.vy = 0; p.vx = 0;
+          p.jumping = false; p.climbing = null; p.ground = null; p.dead = false;
+          Input.state.up = true;
+          _dlog('TELEPORT ladx=' + lad.x + ' y=' + sp.yBot.toFixed(1) + ' screen=' + S.screen);
+        } catch (e) { _dlog('TELEPORT ERR ' + e.message); }
+      }, 1600);
+      var _n = 0;
+      setInterval(function () {
+        try {
+          var st = S.stageState, p = st.player;
+          _dlog('T+' + (++_n) + ' x=' + p.x.toFixed(0) + ' y=' + p.y.toFixed(0) +
+            ' climb=' + !!p.climbing + ' ground=' + JSON.stringify(p.ground) +
+            ' clearT=' + st.clearT.toFixed(2) + ' stage=' + S.stage + ' dead=' + p.dead +
+            ' bonus=' + S.bonus);
+        } catch (e) { _dlog('TICK ERR ' + e.message); }
+      }, 1000);
+    }
+  }
+} catch (e) {}
+
 })();
 
 </script>
