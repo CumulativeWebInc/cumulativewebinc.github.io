@@ -643,14 +643,17 @@ if (typeof module !== 'undefined' && module.exports) module.exports = SK;
 /* ============================================================
    STREET KINGS — browser layer: canvas render, input, WebAudio SFX.
    IIFE. Depends on SK (logic.js) and optional SK_ART (injected by build.js).
-   Visual bar: late-80s arcade beat-'em-up density, 100% ORIGINAL art:
-   pre-rendered chunky-pixel fighter sprites (idle/walk/punch/kick/jump/
-   jumpkick/hit/down/getup/swing/victory), 3 themed stages each with one
-   big original set-piece, small framed cover-art wall signs only,
-   gold-marquee crown title, portrait-box HUD, impact juice.
-   IP-CLEAN: every sprite, prop, sign and backdrop drawn from scratch in
-   code. Genre quality bar only — no borrowed characters, names, story,
-   sprites, music, SFX, or layouts from any existing game.
+   Presentation: the game fills the whole viewport (zero letterbox bars).
+   An aspect-adaptive camera frames the full 216-unit world height so a
+   standing fighter is ~33% of the viewport height and follows the action
+   horizontally; the scene is drawn edge to edge underneath and the arcade
+   HUD sits directly on the art.
+   Fighters are original pre-rendered chunky-pixel sprites (idle/walk/
+   punch/kick/jump/jumpkick/hit/down/getup/swing/victory). Three themed
+   stages, each with one big original set-piece. Cover art appears ONLY as
+   small framed wall signs. IP-CLEAN: every sprite, prop, sign and backdrop
+   is drawn from scratch in code — genre quality bar only, nothing borrowed
+   from any existing game.
    ============================================================ */
 (function () {
 'use strict';
@@ -658,7 +661,62 @@ if (typeof module !== 'undefined' && module.exports) module.exports = SK;
 var cv = document.getElementById('game');
 if (!cv) return;
 var ctx = cv.getContext('2d');
-var W = SK.W, H = SK.H;
+var W = SK.W, H = SK.H;   // 384 x 216 world units (logic space, untouched)
+
+/* ---------------- camera: full-bleed adaptive viewport ----------------
+   The camera always frames the full world height (216 units) edge to edge,
+   so the view rect maps exactly onto the canvas: letterbox is impossible
+   by construction. Width follows the canvas aspect (clamped to the logic
+   width 384). The camera follows the player horizontally; vertically the
+   whole stage is always visible. Fighter fraction = 72/216 = 33% of
+   viewport height (standing sprite is 72 world units tall). */
+var CAM = { viewH: 216, viewW: 384, x: 0, y: 0, scale: 1,
+            cw: 384, ch: 216, fighterFrac: 72 / 216 };
+function fitCanvas() {
+  var dpr = 1;
+  try { dpr = Math.min(window.devicePixelRatio || 1, 2); } catch (e) {}
+  var w = 384, h = 216;
+  try {
+    // match the canvas's displayed (CSS) size when known so the backing
+    // store aspect matches what the player actually sees (16:9 game box);
+    // fall back to the window for harness/edge contexts.
+    var cw = (cv.clientWidth > 0) ? cv.clientWidth : (window.innerWidth || 384);
+    var ch = (cv.clientHeight > 0) ? cv.clientHeight : (window.innerHeight || 216);
+    w = Math.max(1, cw);
+    h = Math.max(1, ch);
+  } catch (e) {}
+  var bw = Math.round(w * dpr), bh = Math.round(h * dpr);
+  if (cv.width !== bw || cv.height !== bh) { cv.width = bw; cv.height = bh; }
+  try { ctx.imageSmoothingEnabled = false; } catch (e) {}
+  CAM.cw = bw; CAM.ch = bh;
+  CAM.viewH = H;
+  CAM.viewW = Math.min(W, CAM.viewH * (bw / bh));
+  CAM.scale = bh / CAM.viewH;
+  CAM.fighterFrac = 72 / CAM.viewH;
+  updateCamera();
+}
+function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+function updateCamera() {
+  if (typeof S === 'undefined' || !S || !S.player) return;
+  var st = S.stages[S.stageIdx];
+  var maxX = Math.max(0, st.scrollLen + W - CAM.viewW);
+  var targetX = clamp(S.player.x - CAM.viewW / 2, 0, maxX);
+  if (typeof CAM.x !== 'number' || Math.abs(targetX - CAM.x) > CAM.viewW) CAM.x = targetX;
+  else CAM.x += (targetX - CAM.x) * 0.25;
+  CAM.y = 0;
+  if (typeof global !== 'undefined') {
+    global.__CAM = { x: CAM.x, y: CAM.y, viewW: CAM.viewW, viewH: CAM.viewH,
+                     scale: CAM.scale, cw: CAM.cw, ch: CAM.ch,
+                     fighterFrac: CAM.fighterFrac };
+  }
+}
+function worldTransform() {
+  var shx = 0, shy = 0;
+  if (S.shake > 0) { shx = (Math.random() - 0.5) * 7; shy = (Math.random() - 0.5) * 5; }
+  ctx.setTransform(CAM.scale, 0, 0, CAM.scale,
+                   -CAM.x * CAM.scale + shx, -CAM.y * CAM.scale + shy);
+}
+function screenTransform() { ctx.setTransform(1, 0, 0, 1, 0, 0); }
 
 /* ---------------- art (cover art for small framed signs / logo) ---------------- */
 var ART = {};   // key -> HTMLImageElement
@@ -864,13 +922,6 @@ function rr(x, y, w, h, r) { // rounded rect path
   ctx.arcTo(x, y, x + w, y, r);
   ctx.closePath();
 }
-function txt(s, x, y, size, color, align) {
-  ctx.font = 'bold ' + size + 'px monospace';
-  ctx.textAlign = align || 'left';
-  ctx.textBaseline = 'top';
-  ctx.fillStyle = color || '#fff';
-  ctx.fillText(s, x, y);
-}
 function goldTxt(s, x, y, size, align) { // arcade gold marquee lettering
   ctx.font = 'bold ' + size + 'px monospace';
   ctx.textAlign = align || 'left';
@@ -884,6 +935,26 @@ function goldTxt(s, x, y, size, align) { // arcade gold marquee lettering
   ctx.fillStyle = '#ffe9a3';
   ctx.fillText(s, x, y - o - 1);
 }
+/* screen-space text with drop shadow — sits directly on the art, arcade style */
+function htxt(s, x, y, size, color, align) {
+  ctx.font = 'bold ' + size + 'px monospace';
+  ctx.textAlign = align || 'left';
+  ctx.textBaseline = 'top';
+  ctx.fillStyle = 'rgba(0,0,0,0.8)';
+  ctx.fillText(s, x + Math.max(1, size / 8), y + Math.max(1, size / 8));
+  ctx.fillStyle = color || '#fff';
+  ctx.fillText(s, x, y);
+}
+/* fitTxt: htxt that shrinks to fit maxW design px — HUD/title never clip */
+function fitTxt(s, x, y, size, color, align, maxW) {
+  var use = size;
+  try {
+    ctx.font = 'bold ' + size + 'px monospace';
+    var w = ctx.measureText(s).width;
+    if (w > maxW) use = Math.max(4, Math.floor(size * maxW / w));
+  } catch (e) {}
+  htxt(s, x, y, use, color, align);
+}
 function drawCrown(c, x, y, w, h, gold, jewel) { // original crown motif (CWI king theme)
   c.fillStyle = gold || '#c9a227';
   c.beginPath();
@@ -894,6 +965,7 @@ function drawCrown(c, x, y, w, h, gold, jewel) { // original crown motif (CWI ki
   c.lineTo(x + w * 0.5, y + h * 0.55);
   c.lineTo(x + w * 0.68, y + h * 0.08);
   c.lineTo(x + w * 0.82, y + h * 0.62);
+  c.lineTo(x, y + h * 0.35);
   c.lineTo(x + w, y + h * 0.35);
   c.lineTo(x + w, y + h);
   c.closePath();
@@ -904,13 +976,23 @@ function drawCrown(c, x, y, w, h, gold, jewel) { // original crown motif (CWI ki
   c.fillRect(x + w * 0.44, y + h * 0.42, w * 0.12, h * 0.12);
 }
 
+/* deterministic texture rng */
+function srand(seed) {
+  var a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    var t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
 /* ============================================================
    SPRITE SYSTEM — original chunky-pixel fighters, pre-rendered to
-   offscreen canvases at boot (iPhone 60fps: per-frame work is a
-   handful of drawImage calls, zero per-frame allocation).
-   Skeleton: parametric two-segment arms/legs, torso with lean,
-   head with per-fighter original headgear. Facing is always +x in
-   the sprite; drawFighter mirrors with ctx.scale(facing,1).
+   offscreen canvases at boot. Per-frame work is a handful of
+   drawImage calls under the camera transform, zero per-frame
+   allocation. Facing is always +x in the sprite; drawFighter mirrors
+   with ctx.scale(facing,1).
    ============================================================ */
 var SPRITE_COUNT = 0;
 function makeSprite(w, h) {
@@ -920,8 +1002,7 @@ function makeSprite(w, h) {
   return c;
 }
 
-/* Fighter palettes — original designs. [jacket, jacketShade, pants,
-   pantsShade, skin, hair, boot, glove] */
+/* Fighter palettes — original designs. */
 var PALS = {
   player: { jacket: '#17c3b2', jshade: '#0d7a70', pants: '#232f42', pshade: '#141b28',
             skin: '#e8b88a', hair: '#14141c', boot: '#3a2c1c', glove: '#0f5f59' },
@@ -949,36 +1030,38 @@ function seg(c, x, y, deg, len, w, col) {
 }
 
 /* pose params: hip dy, torso lean deg, head dx/dy, armF/armB [shoulder,elbow],
-   legF/legB [hip,knee]. Angles: 0=+x(forward), 90=down, -90=up. */
+   legF/legB [hip,knee]. Angles: 0=+x(forward), 90=down, -90=up.
+   Standing-pose legs point DOWN (80-115) so the fighter's full height
+   fills the sprite box; kicks/jumps/takedowns keep extended/tucked legs. */
 function poseParams(pose, type) {
   var P = {
     hip: 0, lean: 4, head: [1, 0],
-    aF: [-30, 75], aB: [25, 85], lF: [10, 8], lB: [-12, 10]
+    aF: [-30, 75], aB: [25, 85], lF: [82, 92], lB: [98, 88]
   };
   switch (pose) {
-    case 'idle1': P.hip = -1; P.aF = [-24, 70]; break;
-    case 'walk0': P.hip = -1; P.lF = [28, 10]; P.lB = [-24, 14]; P.aF = [20, 60]; P.aB = [-18, 70]; break;
-    case 'walk1': P.hip = -2; P.lF = [8, 42]; P.lB = [-6, 8]; P.aF = [26, 55]; P.aB = [-24, 65]; break;
-    case 'walk2': P.hip = -1; P.lF = [-24, 14]; P.lB = [28, 10]; P.aF = [-18, 70]; P.aB = [20, 60]; break;
-    case 'walk3': P.hip = -2; P.lF = [-6, 8]; P.lB = [8, 42]; P.aF = [-24, 65]; P.aB = [26, 55]; break;
-    case 'punch_windup': P.lean = 6; P.aF = [45, 100]; P.aB = [20, 90]; break;
-    case 'punch_jab': P.lean = 12; P.head = [3, 0]; P.aF = [2, 8]; P.aB = [30, 95]; P.lF = [14, 6]; break;
-    case 'punch_cross': P.lean = 16; P.head = [4, 0]; P.aB = [-2, 8]; P.aF = [50, 100]; P.lB = [-18, 8]; break;
-    case 'punch_uppercut': P.lean = 8; P.hip = 4; P.aF = [55, 25]; P.aB = [40, 90]; P.lF = [16, 20]; break;
-    case 'punch_recover': P.lean = 6; P.aF = [28, 80]; break;
-    case 'kick_chamber': P.lean = -4; P.lF = [-55, 85]; P.lB = [4, 4]; P.aF = [40, 60]; P.aB = [-30, 60]; break;
-    case 'kick_extended': P.lean = -14; P.head = [-2, 0]; P.lF = [5, 6]; P.lB = [2, 2];
+    case 'idle1': P.hip = -1; P.aF = [-24, 70]; P.lF = [84, 94]; P.lB = [96, 86]; break;
+    case 'walk0': P.hip = -1; P.lF = [108, 102]; P.lB = [72, 80]; P.aF = [20, 60]; P.aB = [-18, 70]; break;
+    case 'walk1': P.hip = -1; P.lF = [92, 112]; P.lB = [84, 88]; P.aF = [26, 55]; P.aB = [-24, 65]; break;
+    case 'walk2': P.hip = -1; P.lF = [72, 80]; P.lB = [108, 102]; P.aF = [-18, 70]; P.aB = [20, 60]; break;
+    case 'walk3': P.hip = -1; P.lF = [84, 88]; P.lB = [92, 112]; P.aF = [-24, 65]; P.aB = [26, 55]; break;
+    case 'punch_windup': P.lean = 6; P.aF = [45, 100]; P.aB = [20, 90]; P.lF = [82, 92]; P.lB = [98, 88]; break;
+    case 'punch_jab': P.lean = 12; P.head = [3, 0]; P.aF = [2, 8]; P.aB = [30, 95]; P.lF = [86, 94]; P.lB = [96, 86]; break;
+    case 'punch_cross': P.lean = 16; P.head = [4, 0]; P.aB = [-2, 8]; P.aF = [50, 100]; P.lF = [88, 96]; P.lB = [94, 84]; break;
+    case 'punch_uppercut': P.lean = 8; P.hip = 4; P.aF = [55, 25]; P.aB = [40, 90]; P.lF = [60, 115]; P.lB = [65, 118]; break;
+    case 'punch_recover': P.lean = 6; P.aF = [28, 80]; P.lF = [82, 92]; P.lB = [98, 88]; break;
+    case 'kick_chamber': P.lean = -4; P.lF = [-55, 85]; P.lB = [88, 92]; P.aF = [40, 60]; P.aB = [-30, 60]; break;
+    case 'kick_extended': P.lean = -14; P.head = [-2, 0]; P.lF = [5, 6]; P.lB = [88, 92];
       P.aF = [55, 40]; P.aB = [-45, 40]; break;
-    case 'jump': P.hip = -2; P.lF = [-30, 95]; P.lB = [20, 100]; P.aF = [-50, 40]; P.aB = [50, 40]; break;
+    case 'jump': P.hip = -1; P.lF = [-30, 95]; P.lB = [20, 100]; P.aF = [-50, 40]; P.aB = [50, 40]; break;
     case 'jumpkick': P.lean = 22; P.head = [4, 0]; P.lF = [0, 4]; P.lB = [35, 70];
       P.aF = [60, 40]; P.aB = [-50, 50]; break;
     case 'hit': P.lean = -20; P.hip = 2; P.head = [-5, -1]; P.aF = [-60, 30]; P.aB = [60, 30];
-      P.lF = [16, 12]; P.lB = [-8, 10]; break;
-    case 'getup': P.lean = 30; P.hip = 9; P.aF = [70, 30]; P.aB = [80, 30]; P.lF = [40, 70]; P.lB = [-20, 70]; break;
+      P.lF = [75, 105]; P.lB = [80, 108]; break;
+    case 'getup': P.lean = 30; P.hip = 9; P.aF = [70, 30]; P.aB = [80, 30]; P.lF = [35, 130]; P.lB = [55, 140]; break;
     case 'swing': P.lean = 18; P.head = [2, 0]; P.aF = [-120, 20]; P.aB = [-100, 30];
-      P.lF = [18, 10]; P.lB = [-14, 10]; break;
-    case 'victory': P.lean = 2; P.hip = -2; P.head = [0, -2]; P.aF = [-150, 10]; P.aB = [30, 70];
-      P.lF = [8, 6]; P.lB = [-8, 6]; break;
+      P.lF = [84, 94]; P.lB = [96, 86]; break;
+    case 'victory': P.lean = 2; P.hip = -1; P.head = [0, -2]; P.aF = [-150, 10]; P.aB = [30, 70];
+      P.lF = [82, 92]; P.lB = [98, 88]; break;
   }
   return P;
 }
@@ -989,19 +1072,21 @@ function drawHeadgear(c, type, hx, hy, hw, hh, pal, s) {
     R(c, hx - 5 * s, hy + 4, 4 * s, 2 * s, '#0d7a70');
     R(c, hx - 1, hy - 2, hw + 2, 3 * s, pal.hair);
   } else if (type === 'punk') {      // red mohawk fin
-    R(c, hx + 2, hy - 7 * s, 4 * s, 7 * s, pal.hair);
+    R(c, hx + 2, hy - 6 * s, 4 * s, 6 * s, pal.hair);
     R(c, hx + 6, hy - 5 * s, 3 * s, 5 * s, '#8f1f1f');
     R(c, hx - 2, hy - 5 * s, 3 * s, 5 * s, '#8f1f1f');
   } else if (type === 'bruiser') {   // purple bandana + knot
     R(c, hx - 1, hy + 1, hw + 2, 4 * s, '#7b3fd4');
-    R(c, hx + hw - 1, hy + 3, 5 * s, 3 * s, '#47208c');
+    R(c, hx + hw - 1, hy + 3, 4 * s, 3 * s, '#47208c');
   } else {                            // boss: chrome dome shine + heavy brow
     R(c, hx + 2, hy, 5 * s, 2 * s, '#f4f4f4');
     R(c, hx + hw - 5 * s, hy + 5 * s, 5 * s, 2 * s, '#5a4a1a');
   }
-  // eyes (face +x) + mouth
+  // eyes (face +x) + glint + mouth
   R(c, hx + hw - 5 * s, hy + 6 * s, 2 * s, 2 * s, '#101018');
   R(c, hx + hw - 8 * s, hy + 6 * s, 2 * s, 2 * s, '#101018');
+  R(c, hx + hw - 5 * s, hy + 6 * s, 1 * s, 1 * s, '#ffffff');
+  R(c, hx + hw - 8 * s, hy + 6 * s, 1 * s, 1 * s, '#ffffff');
   R(c, hx + hw - 7 * s, hy + 10 * s, 4 * s, 1.5 * s, '#7a4a32');
 }
 
@@ -1009,53 +1094,59 @@ function drawFighterArt(c, type, pose, cw, ch) {
   var pal = PALS[type], s = FSCALE[type];
   var cx = cw / 2, feet = ch - 3 * s;
   var P = poseParams(pose, type);
-  var torsoW = TORSO_W[type] * s, armW = 7 * s, legW = 8 * s;
+  var torsoW = TORSO_W[type] * s, armW = 7.5 * s, legW = 8.5 * s;
 
   if (pose === 'down') { // knocked flat — sprawled body
     var gy = feet - 5 * s;
     R(c, cx - 24 * s, gy - 4 * s, 34 * s, 9 * s, pal.pants);            // legs
     R(c, cx - 24 * s, gy - 4 * s, 8 * s, 9 * s, pal.boot);
+    R(c, cx - 22 * s, gy - 4 * s, 30 * s, 3 * s, pal.pshade);          // leg shade
     R(c, cx + 10 * s, gy - 6 * s, 18 * s, 12 * s, pal.jacket);         // torso
     R(c, cx + 10 * s, gy - 6 * s, 18 * s, 4 * s, pal.jshade);
-    R(c, cx + 28 * s, gy - 8 * s, 11 * s, 11 * s, pal.skin);           // head
-    drawHeadgear(c, type, cx + 28 * s, gy - 8 * s, 11 * s, 11 * s, pal, s);
+    R(c, cx + 10 * s, gy + 2 * s, 18 * s, 4 * s, 'rgba(0,0,0,0.25)');   // ground shadow
+    R(c, cx + 23 * s, gy - 8 * s, 11 * s, 11 * s, pal.skin);           // head
+    drawHeadgear(c, type, cx + 23 * s, gy - 8 * s, 11 * s, 11 * s, pal, s);
     seg(c, cx + 12 * s, gy, 150, 12 * s, armW, pal.jacket);            // sprawled arm
     seg(c, cx + 8 * s, gy - 2 * s, 200, 10 * s, armW * 0.9, pal.jshade);
     return;
   }
 
-  var hipX = cx, hipY = feet - 25 * s + P.hip * s;
+  var hipX = cx, hipY = feet - 29 * s + P.hip * s;
   var lean = P.lean * Math.PI / 180;
-  var shX = hipX + Math.sin(lean) * 20 * s, shY = hipY - Math.cos(lean) * 20 * s;
+  var shX = hipX + Math.sin(lean) * 23 * s, shY = hipY - Math.cos(lean) * 23 * s;
   var tAng = -90 + P.lean;
 
   // back arm (behind torso)
   var shB = [shX - 3 * s, shY + 1 * s];
-  var elB = seg(c, shB[0], shB[1], P.aB[0], 10 * s, armW, pal.jshade);
-  var fiB = seg(c, elB[0], elB[1], P.aB[1], 9 * s, armW * 0.9, pal.skin);
+  var elB = seg(c, shB[0], shB[1], P.aB[0], 11 * s, armW, pal.jshade);
+  var fiB = seg(c, elB[0], elB[1], P.aB[1], 10 * s, armW * 0.9, pal.skin);
   R(c, fiB[0] - 3 * s, fiB[1] - 3 * s, 6 * s, 6 * s, pal.glove);
 
   // back leg
   var hipB = [hipX - 2.5 * s, hipY];
-  var knB = seg(c, hipB[0], hipB[1], P.lB[0], 12 * s, legW, pal.pshade);
-  var anB = seg(c, knB[0], knB[1], P.lB[1], 12 * s, legW * 0.85, pal.pshade);
+  var knB = seg(c, hipB[0], hipB[1], P.lB[0], 14 * s, legW, pal.pshade);
+  var anB = seg(c, knB[0], knB[1], P.lB[1], 14 * s, legW * 0.85, pal.pshade);
   R(c, anB[0] - 1 * s, anB[1] - 2 * s, 8 * s, 5 * s, pal.boot);
 
-  // torso: shade back half + base front half
+  // torso: shade back half + base front half + hem shadow + top rim light
   var px = Math.cos(lean), py = Math.sin(lean);
-  seg(c, hipX - px * 2.5 * s, hipY - py * 2.5 * s, tAng, 20 * s, torsoW * 0.55, pal.jshade);
-  seg(c, hipX + px * 2 * s, hipY + py * 2 * s, tAng, 20 * s, torsoW * 0.62, pal.jacket);
+  seg(c, hipX - px * 2.5 * s, hipY - py * 2.5 * s, tAng, 23 * s, torsoW * 0.55, pal.jshade);
+  seg(c, hipX + px * 2 * s, hipY + py * 2 * s, tAng, 23 * s, torsoW * 0.62, pal.jacket);
+  seg(c, hipX - 1 * s, hipY - 1 * s, tAng, 5 * s, torsoW * 0.66, 'rgba(0,0,0,0.28)');
+  seg(c, shX - 1 * s, shY, tAng, 4 * s, torsoW * 0.5, 'rgba(255,255,255,0.22)');
 
   if (type === 'player') { // jacket zipper + collar
-    var z1 = seg(c, shX + 2 * s, shY + 2 * s, tAng, 16 * s, 2 * s, '#e8f6f4');
+    seg(c, shX + 2 * s, shY + 2 * s, tAng, 19 * s, 2 * s, '#e8f6f4');
     R(c, shX - 5 * s, shY - 1 * s, 10 * s, 3 * s, pal.jshade);
   } else if (type === 'punk') { // open vest: skin chest, red panels
-    seg(c, hipX + px * 2 * s, hipY + py * 2 * s, tAng, 20 * s, torsoW * 0.34, pal.skin);
-    seg(c, hipX - px * 4 * s, hipY - py * 4 * s, tAng, 20 * s, torsoW * 0.3, pal.jacket);
+    seg(c, hipX + px * 2 * s, hipY + py * 2 * s, tAng, 23 * s, torsoW * 0.34, pal.skin);
+    seg(c, hipX - px * 4 * s, hipY - py * 4 * s, tAng, 23 * s, torsoW * 0.3, pal.jacket);
+    seg(c, hipX + px * 2 * s, hipY + py * 2 * s, tAng, 23 * s, torsoW * 0.12, 'rgba(0,0,0,0.25)');
   } else if (type === 'bruiser' || type === 'boss') { // shoulder pads
     var pw = (type === 'boss' ? 17 : 12) * s;
     R(c, shX - pw / 2, shY - 6 * s, pw, 7 * s, pal.jshade);
     R(c, shX - pw / 2, shY - 6 * s, pw, 3 * s, pal.jacket);
+    R(c, shX - pw / 2, shY - 6 * s, pw, 1.5 * s, 'rgba(255,255,255,0.25)');
   }
   if (type === 'boss') { // gold crown emblem on chest (original motif)
     drawCrown(c, shX - 2 * s, shY + 6 * s, 9 * s, 7 * s, '#ffe9a3', '#d83636');
@@ -1066,34 +1157,34 @@ function drawFighterArt(c, type, pose, cw, ch) {
   var bkw = (type === 'boss' || type === 'bruiser') ? 6 * s : 4 * s;
   R(c, hipX + 1 * s, hipY - 2 * s, bkw, 4 * s, '#c9a227');
 
-  // front leg
+  // front leg + thigh shade
   var hipF = [hipX + 2.5 * s, hipY];
-  var knF = seg(c, hipF[0], hipF[1], P.lF[0], 12 * s, legW, pal.pants);
-  var anF = seg(c, knF[0], knF[1], P.lF[1], 12 * s, legW * 0.85, pal.pants);
+  var knF = seg(c, hipF[0], hipF[1], P.lF[0], 14 * s, legW, pal.pants);
+  seg(c, hipF[0] - 1 * s, hipF[1], P.lF[0], 8 * s, legW * 0.5, 'rgba(0,0,0,0.22)');
+  var anF = seg(c, knF[0], knF[1], P.lF[1], 14 * s, legW * 0.85, pal.pants);
   R(c, anF[0] - 1 * s, anF[1] - 2 * s, 8 * s, 5 * s, pal.boot);
   R(c, anF[0] - 1 * s, anF[1] - 2 * s, 8 * s, 2 * s, '#5a4a32'); // boot highlight
 
   // front arm
   var shF = [shX + 3 * s, shY + 1 * s];
-  var elF = seg(c, shF[0], shF[1], P.aF[0], 10 * s, armW, pal.jacket);
-  var fiF = seg(c, elF[0], elF[1], P.aF[1], 9 * s, armW * 0.9, pal.skin);
+  var elF = seg(c, shF[0], shF[1], P.aF[0], 11 * s, armW, pal.jacket);
+  var fiF = seg(c, elF[0], elF[1], P.aF[1], 10 * s, armW * 0.9, pal.skin);
   R(c, fiF[0] - 3 * s, fiF[1] - 3 * s, 6 * s, 6 * s, pal.glove);
   R(c, fiF[0] - 3 * s, fiF[1] - 3 * s, 6 * s, 2 * s, 'rgba(255,255,255,0.35)'); // knuckle hi
 
   // weapon held overhead in swing pose (wooden club)
   if (pose === 'swing') {
-    seg(c, fiF[0], fiF[1] - 2 * s, -115, 26 * s, 5 * s, '#8a5a2b');
+    seg(c, fiF[0], fiF[1] - 2 * s, -25, 16 * s, 5 * s, '#8a5a2b');
     R(c, fiF[0] - 2 * s, fiF[1] - 4 * s, 5 * s, 6 * s, '#6e451f');
   }
 
   // head
-  var hx = shX + Math.sin(lean) * 6 * s + P.head[0] * s - 6.5 * s;
-  var hy = shY - 9 * s + P.head[1] * s;
-  R(c, hx, hy, 13 * s, 12 * s, pal.skin);
-  R(c, hx, hy + 9 * s, 13 * s, 3 * s, 'rgba(0,0,0,0.18)'); // jaw shade
-  drawHeadgear(c, type, hx, hy, 13 * s, 12 * s, pal, s);
+  var hx = shX + Math.sin(lean) * 6 * s + P.head[0] * s - 7 * s;
+  var hy = shY - 10 * s + P.head[1] * s;
+  R(c, hx, hy, 14 * s, 13 * s, pal.skin);
+  R(c, hx, hy + 10 * s, 14 * s, 3 * s, 'rgba(0,0,0,0.18)'); // jaw shade
+  drawHeadgear(c, type, hx, hy, 14 * s, 13 * s, pal, s);
 }
-var lastWeaponKind = 'bat'; // (reserved: swing-pose weapon variant)
 
 /* pose key selection from live fighter state */
 var POSES = ['idle0', 'idle1', 'walk0', 'walk1', 'walk2', 'walk3',
@@ -1127,7 +1218,7 @@ var SPR = {};   // SPR[type][pose] -> canvas
   for (var ti = 0; ti < types.length; ti++) {
     var type = types[ti], s = FSCALE[type];
     SPR[type] = {};
-    var cw = 56 * s + 8, ch = 64 * s + 8;
+    var cw = 72 * s + 8, ch = 64 * s + 8;
     for (var pi = 0; pi < POSES.length; pi++) {
       var c = makeSprite(cw, ch);
       var g = c.getContext('2d');
@@ -1152,12 +1243,12 @@ var PORTRAIT = {};
 })();
 
 /* ============================================================
-   STAGE LAYERS — three original themed environments, each with:
-   far tile (parallax 0.25) / mid tile (parallax 0.55) / near strip
-   (parallax 1.0, full scroll length) carrying ONE big original
-   set-piece + 2-3 signature props + small framed cover-art signs.
-   Cover art appears ONLY as small framed wall signs (never large
-   billboards). All art drawn from scratch in code.
+   STAGE LAYERS — three original themed environments. Every layer is
+   full height (216) so the camera slice (36..216) always has art.
+   far (parallax 0.25) / mid (parallax 0.55) / near strip (parallax 1.0,
+   full scroll length) carrying ONE big original set-piece + signature
+   props + small framed cover-art wall signs only (never billboards).
+   All art drawn from scratch in code.
    ============================================================ */
 var SIGN_W = 30, SIGN_H = 38;   // small-sign rule: framed wall signs only
 var STAGE_META = [
@@ -1169,19 +1260,30 @@ var STAGE_META = [
 function brickWall(c, x, y, w, h, base, mortar, bh) {
   R(c, x, y, w, h, base);
   var bwid = 16, bhgt = bh || 8;
+  var rnd = srand(x * 31 + y * 57 + w);
   for (var ry = y; ry < y + h; ry += bhgt) {
     var off = ((ry / bhgt) % 2) * (bwid / 2);
     for (var rx = x - bwid; rx < x + w + bwid; rx += bwid) {
-      R(c, rx + off + 1, ry + 1, bwid - 2, bhgt - 2, mortar);
+      var v = rnd();
+      var col = v < 0.12 ? 'rgba(0,0,0,0.22)' : (v > 0.9 ? 'rgba(255,255,255,0.08)' : mortar);
+      R(c, rx + off + 1, ry + 1, bwid - 2, bhgt - 2, col);
     }
+  }
+}
+function damageHoles(c, rnd, x0, x1, y0, y1, n) {
+  for (var i = 0; i < n; i++) {
+    var hx = x0 + rnd() * (x1 - x0), hy = y0 + rnd() * (y1 - y0);
+    var hw = 8 + rnd() * 22, hh = 6 + rnd() * 14;
+    R(c, hx, hy, hw, hh, 'rgba(8,6,8,0.85)');
+    R(c, hx - 2, hy - 2, hw + 4, 2, 'rgba(255,255,255,0.10)');
+    R(c, hx + 2, hy + hh, hw - 4, 6 + rnd() * 10, 'rgba(0,0,0,0.25)'); // grime streak
   }
 }
 
 /* small framed cover-art wall sign (the ONLY cover-art format) */
 function framedSign(c, wx, wy, artKey) {
-  // wooden frame + gold inner line
-  R(c, wx, wy, SIGN_W, SIGN_H, '#241a10');
-  R(c, wx + 2, wy + 2, SIGN_W - 4, SIGN_H - 4, '#c9a227');
+  R(c, wx, wy, SIGN_W, SIGN_H, '#241a10');                       // wooden frame
+  R(c, wx + 2, wy + 2, SIGN_W - 4, SIGN_H - 4, '#c9a227');       // gold inner line
   R(c, wx + 3, wy + 3, SIGN_W - 6, SIGN_H - 6, '#0a0a12');
   var im = ART[artKey];
   var ax = wx + 4, ay = wy + 4, aw = SIGN_W - 8, ah = SIGN_H - 12;
@@ -1197,6 +1299,15 @@ function framedSign(c, wx, wy, artKey) {
   c.font = 'bold 5px monospace'; c.textAlign = 'center'; c.textBaseline = 'top';
   c.fillText('CWI RECORDS', wx + SIGN_W / 2, wy + SIGN_H - 8);
 }
+function crownSign(c, wx, wy) { // small framed crown wall decoration (same frame as framedSign)
+  R(c, wx, wy, SIGN_W, SIGN_H, '#241a10');                           // wooden frame
+  R(c, wx + 2, wy + 2, SIGN_W - 4, SIGN_H - 4, '#c9a227');           // gold inner line
+  R(c, wx + 3, wy + 3, SIGN_W - 6, SIGN_H - 6, '#0a0a12');
+  drawCrown(c, wx + 7, wy + 8, SIGN_W - 14, 18, '#c9a227', '#d83636'); // small crown
+  c.fillStyle = '#c9a227';
+  c.font = 'bold 5px monospace'; c.textAlign = 'center'; c.textBaseline = 'top';
+  c.fillText('CWI KINGS', wx + SIGN_W / 2, wy + SIGN_H - 8);
+}
 function cwiWallSign(c, x, y, w) { // tiny code-drawn CWI sign
   R(c, x, y, w, 14, '#0a0a12');
   R(c, x + 1, y + 1, w - 2, 12, '#17c3b2');
@@ -1206,140 +1317,203 @@ function cwiWallSign(c, x, y, w) { // tiny code-drawn CWI sign
   c.fillText('CWI', x + 14, y + 3);
 }
 
-/* ---------- far tiles (parallax 0.25), 480x120 ---------- */
+/* small CWI logo chip: real logo art at logo size, else a code-drawn crown */
+function drawArtLogo(c, x, y, size) {
+  var im = ART['cwi-logo'];
+  if (im && im.complete && im.naturalWidth) {
+    try { c.drawImage(im, x, y, size, size); return; } catch (e) {}
+  }
+  c.fillStyle = '#0a0a12';
+  c.fillRect(x, y, size, size);
+  drawCrown(c, x + size * 0.15, y + size * 0.2, size * 0.7, size * 0.6, '#c9a227', '#d83636');
+}
+
+/* animated steam vent: grate + rising puffs */
+function steamVent(x, gy) {
+  ctx.fillStyle = '#2c2c3a';
+  ctx.fillRect(x - 14, gy - 4, 28, 8);
+  for (var i = 0; i < 3; i++) ctx.fillRect(x - 10 + i * 9, gy - 4, 4, 8);
+  for (var j = 0; j < 3; j++) {
+    var ph = (S.t * 0.7 + j / 3) % 1;
+    ctx.globalAlpha = 0.28 * (1 - ph);
+    ctx.fillStyle = '#b8b8c8';
+    ctx.beginPath();
+    ctx.arc(x - 8 + j * 8, gy - 8 - ph * 44, 4 + ph * 7, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+/* ---------- far tiles (parallax 0.25), 480x216, drawn at world y=0 ---------- */
 function farTile(idx) {
-  var c = makeSprite(480, 120), g = c.getContext('2d');
+  var c = makeSprite(480, 216), g = c.getContext('2d');
+  var rnd = srand(1000 + idx * 77);
   if (idx === 0) { // sunset sky + skyline silhouette
-    var bands = ['#2b1b4d', '#5e2a5e', '#a34a5e', '#e0653a', '#f7b733'];
-    for (var i = 0; i < 5; i++) R(g, 0, i * 24, 480, 24, bands[i]);
+    var bands = ['#160e33', '#2b1b4d', '#5e2a5e', '#a34a5e', '#e0653a', '#f7b733'];
+    for (var i = 0; i < 6; i++) R(g, 0, i * 36, 480, 36, bands[i]);
     g.fillStyle = '#ffe9a3';
-    g.beginPath(); g.arc(330, 92, 20, 0, Math.PI * 2); g.fill();
-    g.fillStyle = '#241a3e';
-    var seed = 1234;
-    for (var x = 0; x < 480; x += 24) {
-      seed = (seed * 16807) % 2147483647;
-      var bh = 30 + (seed % 45);
-      R(g, x, 120 - bh, 20, bh, '#241a3e');
-      if (seed % 3 === 0) R(g, x + 8, 120 - bh - 10, 3, 10, '#241a3e');
+    g.beginPath(); g.arc(330, 62, 20, 0, Math.PI * 2); g.fill();   // low sun
+    g.fillStyle = 'rgba(255,233,163,0.25)';
+    g.beginPath(); g.arc(330, 62, 34, 0, Math.PI * 2); g.fill();
+    for (var cl = 0; cl < 7; cl++) {                                  // clouds
+      var cy = 20 + rnd() * 90, cw2 = 60 + rnd() * 120;
+      R(g, rnd() * 480, cy, cw2, 6 + rnd() * 6, 'rgba(43,27,77,0.7)');
+    }
+    for (var x = 0; x < 480; x += 22) {                               // skyline
+      var bh = 46 + rnd() * 70;
+      R(g, x, 216 - bh, 18, bh, '#241a3e');
+      if (rnd() < 0.5) R(g, x + 7, 216 - bh - 12, 4, 12, '#241a3e');  // antenna
+      for (var wy = 216 - bh + 6; wy < 210; wy += 10)                 // lit windows
+        for (var wx = x + 3; wx < x + 15; wx += 6)
+          if (rnd() < 0.4) R(g, wx, wy, 3, 4, rnd() < 0.7 ? '#ffd23f' : '#ff9a3f');
     }
   } else if (idx === 1) { // night sky + rooftops, water towers
-    R(g, 0, 0, 480, 120, '#070714');
-    R(g, 0, 40, 480, 80, '#0d0d1e');
+    var nb = ['#04040c', '#08081a', '#0d0d24', '#12122e'];
+    for (var j = 0; j < 4; j++) R(g, 0, j * 54, 480, 54, nb[j]);
+    for (var st = 0; st < 70; st++) R(g, rnd() * 480, rnd() * 110, 2, 2, 'rgba(230,230,255,' + (0.3 + rnd() * 0.7) + ')');
     g.fillStyle = '#e8e4d0';
-    g.beginPath(); g.arc(90, 26, 13, 0, Math.PI * 2); g.fill();
-    var seed2 = 777;
-    for (var x2 = 0; x2 < 480; x2 += 40) {
-      seed2 = (seed2 * 16807) % 2147483647;
-      var bh2 = 36 + (seed2 % 40);
-      R(g, x2, 120 - bh2, 34, bh2, '#12121f');
-      if (seed2 % 4 === 0) { // water tower
-        R(g, x2 + 10, 120 - bh2 - 18, 14, 12, '#1c1c2c');
-        R(g, x2 + 8, 120 - bh2 - 6, 18, 3, '#1c1c2c');
+    g.beginPath(); g.arc(90, 44, 16, 0, Math.PI * 2); g.fill();       // moon
+    g.fillStyle = 'rgba(232,228,208,0.18)';
+    g.beginPath(); g.arc(90, 44, 30, 0, Math.PI * 2); g.fill();
+    g.fillStyle = 'rgba(10,10,20,0.5)';
+    g.beginPath(); g.arc(84, 38, 14, 0, Math.PI * 2); g.fill();
+    for (var x2 = 0; x2 < 480; x2 += 38) {
+      var bh2 = 100 + rnd() * 70;                                    // taller: tops clear the near wall
+      R(g, x2, 216 - bh2, 32, bh2, '#101020');
+      if (rnd() < 0.55) { // water tower
+        R(g, x2 + 9, 216 - bh2 - 20, 14, 13, '#181828');
+        R(g, x2 + 7, 216 - bh2 - 7, 18, 3, '#181828');
+        R(g, x2 + 11, 216 - bh2 - 20, 3, 13, '#22223a');
       }
+      for (var wy2 = 216 - bh2 + 8; wy2 < 208; wy2 += 12)
+        for (var wx2 = x2 + 5; wx2 < x2 + 27; wx2 += 8)
+          if (rnd() < 0.35) R(g, wx2, wy2, 4, 5, '#ffca5a');
     }
-  } else { // club interior back wall: deep purple + big gold crown mural
-    R(g, 0, 0, 480, 120, '#2a1030');
-    R(g, 0, 0, 480, 26, '#1c0a20');
-    for (var px = 0; px < 480; px += 60) R(g, px, 26, 3, 94, '#1c0a20');
-    R(g, 150, 34, 180, 62, '#3a1542');           // mural panel
-    R(g, 150, 34, 180, 4, '#c9a227');
-    drawCrown(g, 195, 44, 90, 40, '#c9a227', '#d83636'); // original crown mural
-    g.fillStyle = '#c9a227';
-    g.font = 'bold 9px monospace'; g.textAlign = 'center'; g.textBaseline = 'top';
-    g.fillText('STREET KINGS', 240, 88);
+  } else { // club interior back wall: deep purple + small framed crown sign
+    R(g, 0, 0, 480, 216, '#2a1030');
+    R(g, 0, 0, 480, 30, '#160818');                                  // ceiling
+    for (var bx = 20; bx < 480; bx += 90) R(g, bx, 0, 8, 30, '#0e040e');
+    for (var px = 0; px < 480; px += 60) R(g, px, 30, 3, 186, '#1c0a20'); // panel seams
+    crownSign(g, 225, 44);                                            // small framed crown sign
+    for (var sc = 0; sc < 6; sc++) {                                  // sconce glows
+      var sx = 40 + sc * 80;
+      R(g, sx, 60, 8, 14, '#c9a227');
+      g.fillStyle = 'rgba(255,210,63,0.10)';
+      g.beginPath(); g.ellipse(sx + 4, 110, 34, 44, 0, 0, Math.PI * 2); g.fill();
+    }
   }
   return c;
 }
 
-/* ---------- mid tiles (parallax 0.55), 480x110, drawn at y=66 ---------- */
+/* ---------- mid tiles (parallax 0.55), 480x216, drawn at world y=0 ---------- */
 function midTile(idx) {
-  var c = makeSprite(480, 110), g = c.getContext('2d');
-  if (idx === 0) { // chain-link fence over sunset street
-    R(g, 0, 0, 480, 110, 'rgba(0,0,0,0)');
-    for (var x = 20; x < 480; x += 80) { // posts
-      R(g, x, 0, 6, 110, '#3a3a48');
-      R(g, x, 0, 2, 110, '#55555f');
+  var c = makeSprite(480, 216), g = c.getContext('2d');
+  var rnd = srand(2000 + idx * 131);
+  if (idx === 0) { // chain-link fence over the sunset street
+    for (var x = 20; x < 480; x += 90) {
+      R(g, x, 44, 7, 172, '#3a3a48');
+      R(g, x, 44, 2, 172, '#5a5a66');
+      R(g, x - 3, 40, 13, 6, '#2c2c38');                             // post cap
     }
-    g.strokeStyle = 'rgba(180,180,190,0.5)';
+    R(g, 0, 44, 480, 5, '#2c2c38');                                  // top rail
+    g.strokeStyle = 'rgba(190,190,200,0.5)';
     g.lineWidth = 1;
-    for (var d = -110; d < 480; d += 12) { // diamond mesh
-      g.beginPath(); g.moveTo(d, 0); g.lineTo(d + 110, 110); g.stroke();
-      g.beginPath(); g.moveTo(d + 110, 0); g.lineTo(d, 110); g.stroke();
+    for (var d = -216; d < 480; d += 13) {
+      g.beginPath(); g.moveTo(d, 48); g.lineTo(d + 168, 216); g.stroke();
+      g.beginPath(); g.moveTo(d + 168, 48); g.lineTo(d, 216); g.stroke();
     }
-    R(g, 0, 0, 480, 4, '#2c2c38');
-  } else if (idx === 1) { // garage shutter doors + wall lamps
-    brickWall(g, 0, 0, 480, 110, '#23232f', '#191920', 9);
-    for (var dx = 20; dx < 480; dx += 150) { // shutter doors
-      R(g, dx, 18, 110, 92, '#2e2e3c');
-      for (var sy = 22; sy < 106; sy += 7) R(g, dx + 4, sy, 102, 3, '#1c1c26');
-      R(g, dx, 14, 110, 6, '#3a3a48');
+    for (var rp = 0; rp < 12; rp++)                                   // rust patches
+      R(g, rnd() * 480, 60 + rnd() * 140, 4 + rnd() * 8, 3 + rnd() * 6, 'rgba(140,80,40,0.5)');
+    R(g, 0, 196, 480, 20, '#1a1420');                                // street behind
+  } else if (idx === 1) { // garage frontage: shutters, lamps, pipes (upper half clears the near wall)
+    R(g, 0, 36, 480, 180, '#1a1a26');
+    for (var dx = 16; dx < 480; dx += 152) {
+      R(g, dx, 44, 112, 60, '#2e2e3c');                              // shutter door
+      for (var sy = 48; sy < 100; sy += 7) R(g, dx + 4, sy, 104, 3, '#1c1c26');
+      R(g, dx, 40, 112, 6, '#3a3a48');
     }
-    for (var lx = 95; lx < 480; lx += 150) { // lamps
-      R(g, lx, 8, 10, 6, '#c9a227');
-      g.fillStyle = 'rgba(255,210,63,0.12)';
-      g.beginPath(); g.ellipse(lx + 5, 40, 26, 30, 0, 0, Math.PI * 2); g.fill();
+    for (var lx = 92; lx < 480; lx += 152) {                          // wall lamps
+      R(g, lx, 40, 12, 8, '#c9a227');
+      g.fillStyle = 'rgba(255,210,63,0.13)';
+      g.beginPath(); g.ellipse(lx + 6, 90, 30, 48, 0, 0, Math.PI * 2); g.fill();
     }
-  } else { // speaker stacks + truss columns
-    R(g, 0, 0, 480, 110, 'rgba(0,0,0,0)');
-    for (var sx = 30; sx < 480; sx += 160) { // speaker stack
-      R(g, sx, 14, 64, 96, '#101018');
-      for (var b = 0; b < 3; b++) {
-        R(g, sx + 6, 20 + b * 30, 52, 24, '#1c1c28');
+    for (var pp = 300; pp < 480; pp += 170) {                         // pipes
+      R(g, pp, 36, 10, 84, '#24242f');
+      R(g, pp, 36, 3, 84, '#34343f');
+    }
+  } else { // speaker stacks + truss columns (stacks clear the front wall)
+    for (var sx = 24; sx < 480; sx += 168) {
+      R(g, sx, 24, 66, 96, '#101018');                               // speaker stack
+      R(g, sx, 24, 66, 4, '#1c1c28');
+      for (var b = 0; b < 4; b++) {
+        R(g, sx + 6, 30 + b * 22, 54, 18, '#1c1c28');
         g.fillStyle = '#0a0a10';
-        g.beginPath(); g.arc(sx + 32, 32 + b * 30, 9, 0, Math.PI * 2); g.fill();
+        g.beginPath(); g.arc(sx + 33, 39 + b * 22, 7, 0, Math.PI * 2); g.fill();
         g.fillStyle = '#2c2c3a';
-        g.beginPath(); g.arc(sx + 32, 32 + b * 30, 4, 0, Math.PI * 2); g.fill();
+        g.beginPath(); g.arc(sx + 33, 39 + b * 22, 3, 0, Math.PI * 2); g.fill();
       }
     }
-    for (var tx = 120; tx < 480; tx += 160) { // truss column
-      R(g, tx, 0, 14, 110, '#2c2c3a');
-      for (var ty = 4; ty < 106; ty += 12) {
-        R(g, tx, ty, 14, 3, '#1c1c26');
+    for (var tx = 130; tx < 480; tx += 168) {                         // truss column
+      R(g, tx, 30, 15, 186, '#2c2c3a');
+      for (var ty = 34; ty < 210; ty += 13) {
+        R(g, tx, ty, 15, 3, '#1c1c26');
         g.strokeStyle = '#1c1c26'; g.lineWidth = 2;
-        g.beginPath(); g.moveTo(tx, ty); g.lineTo(tx + 14, ty + 12); g.stroke();
+        g.beginPath(); g.moveTo(tx, ty); g.lineTo(tx + 15, ty + 13); g.stroke();
       }
     }
   }
   return c;
 }
 
-/* ---------- near strips (parallax 1.0): walls, signs, set-piece, props, ground ---------- */
-function tourBus(g, x) { // STAGE 1 big set-piece: original CWI tour bus
+/* ---------- set-pieces (original designs) ---------- */
+function tourBus(g, x) { // STAGE 1 big set-piece: original CWI tour bus, y 58..150
   var y = 58, w = 220, h = 78;
-  R(g, x, y, w, h, '#0a0a12');                       // outline
-  R(g, x + 3, y + 3, w - 6, h - 6, '#18242f');       // body
-  R(g, x + 3, y + h - 26, w - 6, 10, '#17c3b2');     // teal stripe
-  R(g, x + 3, y + h - 14, w - 6, 3, '#c9a227');      // gold pinstripe
-  for (var wx = x + 12; wx < x + w - 40; wx += 26) { // windows
-    R(g, wx, y + 12, 20, 18, '#f7e9b0');
-    R(g, wx, y + 12, 20, 4, '#fff8d8');
+  R(g, x, y, w, h, '#0a0a12');
+  R(g, x + 3, y + 3, w - 6, h - 6, '#18242f');
+  R(g, x + 3, y + h - 26, w - 6, 10, '#17c3b2');
+  R(g, x + 3, y + h - 14, w - 6, 3, '#c9a227');
+  R(g, x + 3, y + 3, w - 6, 4, 'rgba(255,255,255,0.14)');             // roof light
+  for (var wx = x + 12; wx < x + w - 44; wx += 26) {
+    R(g, wx - 2, y + 10, 24, 22, '#0a0a12');                        // window frame
+    R(g, wx, y + 12, 20, 18, '#f7e9b0');                            // glass
+    R(g, wx, y + 12, 20, 4, '#fff8d8');                             // glass top light
+    R(g, wx, y + 24, 20, 6, 'rgba(0,0,0,0.25)');                     // glass bottom shade
+    R(g, wx + 3, y + 13, 5, 14, 'rgba(255,255,255,0.35)');           // glass shine
   }
-  R(g, x + w - 30, y + 12, 22, 44, '#0d141c');       // door
-  drawCrown(g, x + w / 2 - 34, y + 40, 68, 26, '#c9a227', '#d83636'); // crown livery
+  R(g, x + w - 32, y + 12, 24, 50, '#0d141c');                       // door
+  R(g, x + w - 32, y + 12, 24, 3, '#1d2b3a');
+  drawCrown(g, x + w / 2 - 32, y + 66, 13, 10, '#c9a227', '#d83636'); // small crown logo
   g.fillStyle = '#c9a227';
   g.font = 'bold 13px monospace'; g.textAlign = 'center'; g.textBaseline = 'top';
-  g.fillText('CWI', x + w / 2, y + 68);
-  var wy1 = x + 40, wy2 = x + w - 44;                 // wheels
-  [wy1, wy2].forEach(function (wxx) {
+  g.fillText('CWI', x + w / 2 + 6, y + 66);
+  [x + 42, x + w - 46].forEach(function (wxx) {
     g.fillStyle = '#0a0a0c';
-    g.beginPath(); g.arc(wxx, y + h + 2, 13, 0, Math.PI * 2); g.fill();
+    g.beginPath(); g.arc(wxx, y + h + 4, 14, 0, Math.PI * 2); g.fill();
     g.fillStyle = '#3a3a44';
-    g.beginPath(); g.arc(wxx, y + h + 2, 6, 0, Math.PI * 2); g.fill();
+    g.beginPath(); g.arc(wxx, y + h + 4, 6, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#0a0a0c';
+    g.beginPath(); g.arc(wxx, y + h + 4, 2, 0, Math.PI * 2); g.fill();
   });
-  R(g, x + 20, y - 8, 60, 8, '#101018');              // roof AC
-  R(g, x + 6, y + h - 4, 12, 6, '#ffe9a3');           // headlight
+  R(g, x + 6, y + h - 4, 12, 6, '#ffe9a3');                         // headlight
+  R(g, x + 6, y + h - 4, 12, 2, '#fff8d8');
+  g.fillStyle = 'rgba(0,0,0,0.35)';                                  // ground shadow
+  g.beginPath(); g.ellipse(x + w / 2, y + h + 20, w / 2, 8, 0, 0, Math.PI * 2); g.fill();
 }
-function lowrider(g, x) { // STAGE 2 big set-piece: original lowrider
-  var y = 122, w = 190, h = 48;
+function lowrider(g, x) { // STAGE 2 big set-piece: original lowrider, y 96..156
+  var y = 108, w = 190, h = 48;
+  g.fillStyle = 'rgba(0,0,0,0.4)';
+  g.beginPath(); g.ellipse(x + w / 2, y + h + 6, w / 2, 7, 0, 0, Math.PI * 2); g.fill();
   R(g, x, y, w, h, '#0a0a12');
-  R(g, x + 3, y + 6, w - 6, h - 14, '#a32633');       // candy-red body
-  R(g, x + 3, y + 6, w - 6, 8, '#d84a5a');            // highlight
-  R(g, x + 3, y + h - 12, w - 6, 4, '#c9a227');       // gold trim
-  R(g, x + 40, y - 12, 60, 20, '#7ec8e8');            // cabin glass
+  R(g, x + 3, y + 6, w - 6, h - 14, '#a32633');
+  R(g, x + 3, y + 6, w - 6, 8, '#d84a5a');
+  R(g, x + 3, y + h - 12, w - 6, 4, '#c9a227');
+  R(g, x + 40, y - 12, 60, 20, '#7ec8e8');
   R(g, x + 40, y - 12, 60, 5, '#cfeefc');
   R(g, x + 104, y - 12, 44, 20, '#7ec8e8');
-  drawCrown(g, x + w / 2 - 12, y + 16, 24, 14, '#c9a227', '#101018'); // door crown
-  [x + 38, x + w - 38].forEach(function (wxx) {       // whitewalls
+  R(g, x + 104, y - 12, 44, 5, '#cfeefc');
+  R(g, x + 38, y - 14, 4, 22, '#0a0a12');
+  drawCrown(g, x + w / 2 - 12, y + 18, 24, 14, '#c9a227', '#101018');
+  [x + 38, x + w - 38].forEach(function (wxx) {
     g.fillStyle = '#0a0a0c';
     g.beginPath(); g.arc(wxx, y + h, 14, 0, Math.PI * 2); g.fill();
     g.fillStyle = '#e8e4d0';
@@ -1347,113 +1521,153 @@ function lowrider(g, x) { // STAGE 2 big set-piece: original lowrider
     g.fillStyle = '#8a8a92';
     g.beginPath(); g.arc(wxx, y + h, 4, 0, Math.PI * 2); g.fill();
   });
-  R(g, x - 4, y + h - 14, 10, 8, '#c9c9d2');          // chrome bumpers
+  R(g, x - 4, y + h - 14, 10, 8, '#c9c9d2');
   R(g, x + w - 6, y + h - 14, 10, 8, '#c9c9d2');
+  R(g, x + 10, y + 10, 30, 4, 'rgba(255,255,255,0.25)');              // body shine
 }
-function stageRig(g, x) { // STAGE 3 big set-piece: performance stage rig
-  var top = 26, bot = 158;
-  [x, x + 120].forEach(function (tx) {                 // truss towers
+function stageRig(g, x) { // STAGE 3 big set-piece: performance stage rig, y 30..190
+  var top = 30, bot = 190;
+  [x, x + 120].forEach(function (tx) {
     R(g, tx, top, 16, bot - top, '#2c2c3a');
+    R(g, tx, top, 4, bot - top, '#3a3a48');
     for (var ty = top + 4; ty < bot - 6; ty += 12) {
       R(g, tx, ty, 16, 3, '#1c1c26');
       g.strokeStyle = '#1c1c26'; g.lineWidth = 2;
       g.beginPath(); g.moveTo(tx, ty); g.lineTo(tx + 16, ty + 12); g.stroke();
     }
   });
-  R(g, x, top, 136, 12, '#2c2c3a');                    // crossbar
-  for (var lx = x + 14; lx < x + 124; lx += 36) {       // lamp heads
+  R(g, x, top, 136, 12, '#2c2c3a');
+  R(g, x, top, 136, 3, '#3a3a48');
+  for (var lx = x + 14; lx < x + 124; lx += 36) {
     R(g, lx, top + 12, 16, 10, '#101018');
     g.fillStyle = '#ffe9a3';
     g.beginPath(); g.arc(lx + 8, top + 24, 5, 0, Math.PI * 2); g.fill();
   }
-  [x - 64, x + 136].forEach(function (sx) {            // speaker stacks
-    for (var b = 0; b < 3; b++) {
-      R(g, sx, bot - 34 - b * 34, 56, 30, '#101018');
+  [x - 70, x + 142].forEach(function (sx) {
+    for (var b = 0; b < 4; b++) {
+      R(g, sx, bot - 30 - b * 36, 58, 32, '#101018');
+      R(g, sx, bot - 30 - b * 36, 58, 3, '#1c1c28');
       g.fillStyle = '#0a0a10';
-      g.beginPath(); g.arc(sx + 28, bot - 19 - b * 34, 10, 0, Math.PI * 2); g.fill();
+      g.beginPath(); g.arc(sx + 29, bot - 14 - b * 36, 11, 0, Math.PI * 2); g.fill();
+      g.fillStyle = '#2c2c3a';
+      g.beginPath(); g.arc(sx + 29, bot - 14 - b * 36, 5, 0, Math.PI * 2); g.fill();
     }
   });
-  drawCrown(g, x + 48, top + 40, 40, 26, '#c9a227', '#d83636'); // rig crown badge
+  drawCrown(g, x + 54, top + 50, 28, 18, '#c9a227', '#d83636');       // small crown emblem on the rig
 }
 
+/* ---------- near strips (parallax 1.0), full scroll length x 216 ---------- */
 function nearStrip(idx, st) {
   var sw = st.scrollLen + W + 80;
   var c = makeSprite(sw, 216), g = c.getContext('2d');
+  var rnd = srand(3000 + idx * 911);
   var bbs = st.billboards;
+  var i;
   if (idx === 0) {
-    // warm brick walls lit by sunset
-    brickWall(g, 0, 36, sw, 88, '#4a2c33', '#33202a', 9);
-    R(g, 0, 124, sw, 4, '#5e3a2e'); // wall base
-    for (var i = 0; i < bbs.length; i++) framedSign(g, bbs[i].x, 56, bbs[i].art);
-    cwiWallSign(g, 330, 62, 44);
+    // warm sunset-lit brick wall (mid-layer fence + skyline read above it)
+    brickWall(g, 0, 88, sw, 40, '#6b3a2e', '#472520', 10);
+    damageHoles(g, rnd, 60, sw - 60, 92, 124, 9);
+    R(g, 0, 128, sw, 10, '#8a7f74');                                 // stone cornice
+    R(g, 0, 128, sw, 3, '#b5aa9c');
+    R(g, 0, 135, sw, 3, 'rgba(0,0,0,0.35)');
+    for (var gx = 12; gx < sw; gx += 26) R(g, gx, 131, 2, 7, 'rgba(0,0,0,0.25)');
+    for (i = 0; i < bbs.length; i++) framedSign(g, bbs[i].x, 90, bbs[i].art);
+    cwiWallSign(g, 330, 94, 44);
     tourBus(g, 430);
-    // props: streetlights, hydrant, trash bags
-    [180, 760].forEach(function (lx) {
-      R(g, lx, 70, 5, 70, '#2c2c3a');
-      R(g, lx - 4, 64, 12, 6, '#ffd23f');
+    [180, 780].forEach(function (lx) {                                // streetlights
+      R(g, lx, 66, 6, 84, '#2c2c3a');
+      R(g, lx, 66, 2, 84, '#4a4a58');
+      R(g, lx - 5, 58, 15, 8, '#3a3a48');
+      R(g, lx - 3, 62, 11, 4, '#ffd23f');
       g.fillStyle = 'rgba(255,210,63,0.10)';
-      g.beginPath(); g.ellipse(lx + 2, 140, 36, 14, 0, 0, Math.PI * 2); g.fill();
+      g.beginPath(); g.ellipse(lx + 2, 130, 40, 22, 0, 0, Math.PI * 2); g.fill();
     });
-    R(g, 700, 138, 14, 18, '#d83636'); // hydrant
+    R(g, 700, 138, 14, 20, '#d83636');                               // hydrant
+    R(g, 700, 138, 14, 4, '#ff6b6b');
     R(g, 702, 134, 10, 5, '#8f1f1f');
-    R(g, 250, 142, 22, 14, '#1c1c22'); R(g, 274, 144, 18, 12, '#24242c'); // trash bags
-    // asphalt ground, clean combat band
-    R(g, 0, 128, sw, 88, '#14141c');
-    R(g, 0, 128, sw, 5, '#23232e');
+    R(g, 250, 146, 24, 14, '#1c1c22'); R(g, 276, 148, 19, 12, '#24242c');
+    R(g, 253, 146, 18, 3, '#2e2e38');
+    // ground: sidewalk + asphalt
+    R(g, 0, 138, sw, 24, '#3a3a44');
+    for (var sx = 0; sx < sw; sx += 44) R(g, sx, 138, 2, 24, '#2c2c34');
+    R(g, 0, 162, sw, 54, '#16161e');
+    R(g, 0, 162, sw, 3, '#23232e');
     g.fillStyle = '#1e1e28';
-    for (var lx2 = 20; lx2 < sw; lx2 += 64) R(g, lx2, 168, 30, 3, '#1e1e28'); // lane marks
-    g.strokeStyle = '#0c0c12'; g.lineWidth = 1; // cracks
+    for (var lx2 = 30; lx2 < sw; lx2 += 72) R(g, lx2, 188, 34, 3, '#1e1e28');
+    g.strokeStyle = '#0c0c12'; g.lineWidth = 1;
     for (var cx0 = 60; cx0 < sw; cx0 += 170) {
-      g.beginPath(); g.moveTo(cx0, 150); g.lineTo(cx0 + 22, 168); g.lineTo(cx0 + 10, 190); g.stroke();
+      g.beginPath(); g.moveTo(cx0, 166); g.lineTo(cx0 + 22, 184); g.lineTo(cx0 + 10, 206); g.stroke();
     }
+    g.fillStyle = 'rgba(0,0,0,0.3)';
+    g.beginPath(); g.ellipse(620, 196, 26, 6, 0, 0, Math.PI * 2); g.fill(); // manhole shadow
+    g.strokeStyle = '#23232e';
+    g.beginPath(); g.arc(620, 194, 12, 0, Math.PI * 2); g.stroke();
   } else if (idx === 1) {
-    // dark industrial brick + garage frontage
-    brickWall(g, 0, 30, sw, 100, '#2b2b36', '#1d1d26', 9);
-    R(g, 0, 130, sw, 4, '#17171f');
-    for (var j = 0; j < bbs.length; j++) framedSign(g, bbs[j].x, 50, bbs[j].art);
-    cwiWallSign(g, 620, 56, 44);
+    // dark industrial brick + garage frontage (mid shutters/lamps read above)
+    brickWall(g, 0, 80, sw, 48, '#33333f', '#22222c', 10);
+    damageHoles(g, rnd, 60, sw - 60, 84, 124, 7);
+    R(g, 0, 128, sw, 8, '#1a1a22');
+    for (var j = 0; j < bbs.length; j++) framedSign(g, bbs[j].x, 84, bbs[j].art);
+    cwiWallSign(g, 620, 86, 44);
+    // neon sign housing (animated glow drawn in drawStageFx)
+    R(g, 380, 40, 66, 28, '#0a0a12');
+    R(g, 381, 41, 64, 26, '#14141c');
     lowrider(g, 470);
-    // props: barrel cluster, dumpster, ladder, awnings
-    [[240, 150], [262, 148], [251, 128], [700, 150], [722, 148]].forEach(function (bp) {
+    [[240, 152], [262, 150], [251, 130], [700, 152], [722, 150], [712, 130]].forEach(function (bp) {
       R(g, bp[0], bp[1], 20, 26, '#8a4a1a');
       R(g, bp[0], bp[1] + 8, 20, 3, '#5e2f0e'); R(g, bp[0], bp[1] + 18, 20, 3, '#5e2f0e');
       R(g, bp[0] + 2, bp[1], 16, 4, '#a35a22');
     });
-    R(g, 100, 120, 70, 44, '#1d3a2a'); // dumpster
-    R(g, 100, 114, 70, 8, '#26503a');
-    R(g, 640, 60, 26, 90, '#3a3a48'); // ladder (flavor)
-    for (var ly = 66; ly < 146; ly += 12) R(g, 642, ly, 22, 4, '#55555f');
-    [300, 560].forEach(function (ax) { // striped awnings
+    R(g, 100, 122, 72, 46, '#1d3a2a');                               // dumpster
+    R(g, 100, 116, 72, 8, '#26503a');
+    R(g, 104, 130, 64, 3, '#142a1e'); R(g, 104, 142, 64, 3, '#142a1e');
+    R(g, 640, 56, 26, 96, '#3a3a48');                                // ladder (flavor)
+    for (var ly = 62; ly < 148; ly += 12) R(g, 642, ly, 22, 4, '#55555f');
+    [300, 580].forEach(function (ax) {                               // striped awnings
       for (var s2 = 0; s2 < 8; s2++) R(g, ax + s2 * 12, 96, 12, 26, s2 % 2 ? '#7a2430' : '#d8d0c0');
       R(g, ax, 96, 96, 4, '#3a3a48');
+      R(g, ax, 122, 96, 3, 'rgba(0,0,0,0.3)');
     });
     // concrete ground
-    R(g, 0, 134, sw, 82, '#181820');
-    R(g, 0, 134, sw, 5, '#232330');
+    R(g, 0, 136, sw, 80, '#181820');
+    R(g, 0, 136, sw, 4, '#232330');
     g.fillStyle = 'rgba(0,0,0,0.35)';
-    g.beginPath(); g.ellipse(420, 180, 40, 8, 0, 0, Math.PI * 2); g.fill(); // oil stains
-    g.beginPath(); g.ellipse(820, 170, 26, 6, 0, 0, Math.PI * 2); g.fill();
-    R(g, 540, 176, 40, 10, '#101018'); // drain grate
-    for (var gx = 542; gx < 578; gx += 6) R(g, gx, 177, 3, 8, '#23232e');
+    g.beginPath(); g.ellipse(420, 184, 42, 8, 0, 0, Math.PI * 2); g.fill();
+    g.beginPath(); g.ellipse(830, 174, 26, 6, 0, 0, Math.PI * 2); g.fill();
+    g.beginPath(); g.ellipse(150, 196, 30, 7, 0, 0, Math.PI * 2); g.fill();
+    R(g, 540, 180, 42, 10, '#101018');                               // drain grate
+    for (var gx2 = 542; gx2 < 580; gx2 += 6) R(g, gx2, 181, 3, 8, '#23232e');
+    g.strokeStyle = '#0e0e14'; g.lineWidth = 1;
+    for (var cx1 = 90; cx1 < sw; cx1 += 200) {
+      g.beginPath(); g.moveTo(cx1, 150); g.lineTo(cx1 + 30, 172); g.lineTo(cx1 + 12, 200); g.stroke();
+    }
   } else {
-    // club interior: deep purple walls, wood floor
-    R(g, 0, 0, sw, 150, '#2a1030');
-    R(g, 0, 150, sw, 66, '#241423');
-    for (var fx = 0; fx < sw; fx += 48) R(g, fx, 150, 2, 66, '#1a0c1c'); // planks
-    R(g, 0, 148, sw, 6, 'rgba(201,162,39,0.25)'); // sheen
-    R(g, 0, 0, sw, 20, '#1c0a20'); // ceiling
-    for (var k = 0; k < bbs.length; k++) framedSign(g, bbs[k].x, 46, bbs[k].art);
-    cwiWallSign(g, 300, 52, 44);
+    // club interior: deep purple walls, wood floor (mid speaker stacks read above)
+    R(g, 0, 84, sw, 44, '#33143a');
+    R(g, 0, 84, sw, 4, '#c9a227');
+    R(g, 0, 124, sw, 4, '#1c0a20');
+    for (var vx = 0; vx < sw; vx += 72) R(g, vx, 88, 3, 36, '#241028'); // panel seams
+    R(g, 0, 30, sw, 8, '#160818');                                   // ceiling trim
+    for (var k = 0; k < bbs.length; k++) framedSign(g, bbs[k].x, 86, bbs[k].art);
+    cwiWallSign(g, 300, 88, 44);
     stageRig(g, 520);
-    // props: mic stand, cables, side speakers
-    R(g, 320, 90, 4, 60, '#3a3a48');
-    R(g, 314, 84, 16, 6, '#3a3a48');
-    g.strokeStyle = '#101018'; g.lineWidth = 3;
-    g.beginPath(); g.moveTo(200, 200); g.quadraticCurveTo(400, 190, 640, 204); g.stroke(); // cables
-    g.beginPath(); g.moveTo(240, 206); g.quadraticCurveTo(460, 214, 700, 200); g.stroke();
-    R(g, 180, 118, 44, 40, '#101018'); // side cab
+    R(g, 320, 92, 4, 62, '#3a3a48');                                // mic stand
+    R(g, 314, 86, 16, 6, '#3a3a48');
+    R(g, 318, 84, 8, 4, '#55555f');
+    g.strokeStyle = '#101018'; g.lineWidth = 3;                      // cables
+    g.beginPath(); g.moveTo(200, 202); g.quadraticCurveTo(400, 192, 640, 206); g.stroke();
+    g.beginPath(); g.moveTo(240, 208); g.quadraticCurveTo(460, 216, 700, 202); g.stroke();
+    R(g, 180, 120, 46, 42, '#101018');                              // side cab
+    R(g, 180, 120, 46, 4, '#1c1c28');
     g.fillStyle = '#0a0a10';
-    g.beginPath(); g.arc(202, 138, 11, 0, Math.PI * 2); g.fill();
+    g.beginPath(); g.arc(203, 141, 12, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#2c2c3a';
+    g.beginPath(); g.arc(203, 141, 5, 0, Math.PI * 2); g.fill();
+    // wood floor
+    R(g, 0, 128, sw, 88, '#2c1a2e');
+    for (var fx = 0; fx < sw; fx += 48) R(g, fx, 128, 2, 88, '#1a0c1c');
+    R(g, 0, 128, sw, 5, 'rgba(201,162,39,0.22)');
+    for (var fz = 140; fz < 216; fz += 24) R(g, 0, fz, sw, 1, 'rgba(0,0,0,0.25)');
   }
   return c;
 }
@@ -1467,410 +1681,381 @@ var FAR = [], MID = [], NEAR = [];
   }
 })();
 
-/* dynamic animated overlays per stage (cheap: a few shapes) */
+/* parallax tile draw: layer moves at `factor` x camera speed (world coords) */
+function paraDraw(layer, factor) {
+  var off = CAM.x * (1 - factor);
+  var startX = Math.floor((CAM.x - 480) / 480) * 480;
+  var endX = CAM.x + CAM.viewW + 480;
+  for (var x = startX; x < endX; x += 480) {
+    try { ctx.drawImage(layer, x + off, 0); } catch (e) {}
+  }
+}
+
+/* dynamic animated overlays per stage, world coords (cheap: a few shapes) */
 function drawStageFx() {
   var idx = S.stageIdx;
-  var shx = S.shake > 0 ? (Math.random() - 0.5) * 6 : 0;
   if (idx === 0) {
-    // traffic light blinking at world x 850
-    var tx = Math.round(850 - S.scrollX + shx);
-    if (tx > -20 && tx < W + 20) {
-      ctx.fillStyle = '#2c2c3a';
-      ctx.fillRect(tx, 84, 8, 60);
-      ctx.fillStyle = '#101018';
-      ctx.fillRect(tx - 4, 60, 16, 26);
-      var phase = Math.floor(S.t * 0.8) % 3;
-      ctx.fillStyle = phase === 0 ? '#ff5252' : '#3a1518';
-      ctx.fillRect(tx - 1, 63, 10, 6);
-      ctx.fillStyle = phase === 1 ? '#ffd23f' : '#3a3015';
-      ctx.fillRect(tx - 1, 71, 10, 6);
-      ctx.fillStyle = phase === 2 ? '#41d83f' : '#153a18';
-      ctx.fillRect(tx - 1, 79, 10, 6);
-    }
-    // steam vent
-    var sx = Math.round(350 - S.scrollX + shx);
-    if (sx > -30 && sx < W + 30) {
-      ctx.fillStyle = '#3a3a48';
-      ctx.fillRect(sx, 146, 18, 8);
-      for (var p = 0; p < 3; p++) {
-        var py = 140 - ((S.t * 22 + p * 22) % 66);
-        ctx.fillStyle = 'rgba(200,200,210,' + (0.22 - p * 0.06) + ')';
-        ctx.beginPath();
-        ctx.ellipse(sx + 9 + Math.sin(S.t * 2 + p) * 6, py, 8 + p * 3, 6 + p * 2, 0, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
+    var tx = 850;                                                    // traffic light
+    ctx.fillStyle = '#2c2c3a';
+    ctx.fillRect(tx, 84, 8, 66);
+    ctx.fillStyle = '#101018';
+    ctx.fillRect(tx - 4, 58, 16, 28);
+    var phase = Math.floor(S.t * 0.8) % 3;
+    ctx.fillStyle = phase === 0 ? '#ff5252' : '#3a1518';
+    ctx.fillRect(tx - 1, 61, 10, 6);
+    ctx.fillStyle = phase === 1 ? '#ffd23f' : '#3a3015';
+    ctx.fillRect(tx - 1, 70, 10, 6);
+    ctx.fillStyle = phase === 2 ? '#41d83f' : '#153a18';
+    ctx.fillRect(tx - 1, 79, 10, 6);
+    steamVent(350, 150);
   } else if (idx === 1) {
-    // flickering neon CWI sign at world x 380
-    var nx = Math.round(380 - S.scrollX + shx);
-    if (nx > -60 && nx < W + 60) {
-      var flick = (Math.floor(S.t * 9) % 7 === 0) ? 0.25 : 1;
-      ctx.save();
-      ctx.globalAlpha = 0.9 * flick;
-      ctx.fillStyle = '#0a0a12';
-      ctx.fillRect(nx, 40, 64, 26);
-      ctx.fillStyle = '#ff5fa2';
-      ctx.font = 'bold 13px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
-      ctx.fillText('CWI', nx + 32, 44);
-      ctx.strokeStyle = '#ff5fa2';
-      ctx.strokeRect(nx + 1.5, 41.5, 61, 23);
-      ctx.restore();
-    }
-    // steam vent
-    var sx2 = Math.round(650 - S.scrollX + shx);
-    if (sx2 > -30 && sx2 < W + 30) {
-      ctx.fillStyle = '#3a3a48';
-      ctx.fillRect(sx2, 150, 18, 8);
-      for (var p2 = 0; p2 < 3; p2++) {
-        var py2 = 144 - ((S.t * 20 + p2 * 24) % 70);
-        ctx.fillStyle = 'rgba(200,200,210,' + (0.2 - p2 * 0.05) + ')';
-        ctx.beginPath();
-        ctx.ellipse(sx2 + 9 + Math.sin(S.t * 2.4 + p2) * 7, py2, 8 + p2 * 3, 6 + p2 * 2, 0, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-  } else {
-    // sweeping stage light beams from the rig
-    var rx = Math.round(520 - S.scrollX + shx), rx2 = Math.round(640 - S.scrollX + shx);
+    var flick = (Math.floor(S.t * 9) % 7 === 0) ? 0.55 : 1;          // neon flicker
     ctx.save();
-    ctx.globalAlpha = 0.14;
-    [[rx, '#ff5fa2'], [rx2, '#41d8e8']].forEach(function (bm, bi) {
-      var sway = Math.sin(S.t * 1.4 + bi * 2.4) * 60;
+    ctx.globalAlpha = 0.95 * flick;
+    ctx.fillStyle = '#ff5fa2';
+    ctx.font = 'bold 15px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    ctx.fillText('CWI', 413, 46);
+    ctx.strokeStyle = '#ff5fa2'; ctx.lineWidth = 1.5;
+    ctx.strokeRect(382.5, 42.5, 61, 23);
+    ctx.restore();
+    steamVent(650, 154);
+  } else {
+    var rx = 580, rx2 = 700;                                         // sweeping beams
+    ctx.save();
+    ctx.globalAlpha = 0.13;
+    [[rx, '#ff5fa2', 0], [rx2, '#41d8e8', 2.4]].forEach(function (bm) {
+      var sway = Math.sin(S.t * 1.4 + bm[2]) * 70;
       ctx.fillStyle = bm[1];
       ctx.beginPath();
-      ctx.moveTo(bm[0] + 60, 40);
-      ctx.lineTo(bm[0] + sway - 30, 210);
-      ctx.lineTo(bm[0] + sway + 30, 210);
+      ctx.moveTo(bm[0], 44);
+      ctx.lineTo(bm[0] + sway - 34, 216);
+      ctx.lineTo(bm[0] + sway + 34, 216);
       ctx.closePath();
       ctx.fill();
     });
     ctx.restore();
-    // hanging lamp glow pulse
-    for (var hx = 120; hx < 900; hx += 260) {
-      var lx = Math.round(hx - S.scrollX + shx);
-      if (lx < -20 || lx > W + 20) continue;
-      ctx.fillStyle = '#1c0a20';
-      ctx.fillRect(lx, 0, 4, 18);
+    for (var hx = 120; hx < 1100; hx += 260) {                        // hanging lamps
+      ctx.fillStyle = '#160818';
+      ctx.fillRect(hx, 30, 4, 20);
       var pulse = 0.5 + 0.5 * Math.sin(S.t * 3 + hx);
-      ctx.fillStyle = 'rgba(255,233,163,' + (0.5 + 0.3 * pulse) + ')';
-      ctx.beginPath(); ctx.arc(lx + 2, 24, 5, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = 'rgba(255,233,163,' + (0.55 + 0.3 * pulse).toFixed(2) + ')';
+      ctx.beginPath(); ctx.arc(hx + 2, 56, 5, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = 'rgba(255,233,163,' + (0.16 + 0.08 * pulse).toFixed(2) + ')';
+      ctx.beginPath(); ctx.arc(hx + 2, 56, 13, 0, Math.PI * 2); ctx.fill();
+    }
+    for (var px = 200; px < 1100; px += 240) {                        // floor spot pools
+      var pulse2 = 0.5 + 0.5 * Math.sin(S.t * 2 + px);
+      ctx.fillStyle = 'rgba(255,210,63,' + (0.10 + 0.05 * pulse2).toFixed(2) + ')';
+      ctx.beginPath(); ctx.ellipse(px, 200, 46, 8, 0, 0, Math.PI * 2); ctx.fill();
     }
   }
 }
 
-/* ---------------- fighters ---------------- */
-function typeOf(f, isPlayer) { return isPlayer ? 'player' : (f.type || 'punk'); }
-
-function drawFighter(f, isPlayer) {
-  var type = typeOf(f, isPlayer);
-  var shx = S.shake > 0 ? (Math.random() - 0.5) * 6 : 0;
-  var shy = S.shake > 0 ? (Math.random() - 0.5) * 4 : 0;
-  var sx = Math.round(f.x - S.scrollX + shx);
-  var gy = Math.round(f.y + shy);
-  var z = f.z || 0;
-  if (sx < -90 || sx > W + 90) return;
-  var pose = poseFor(f, isPlayer);
-  var spr = SPR[type][pose];
-  var dw = spr.width, dh = spr.height;
-
-  // dust on knockdown / landing (render-side juice, logic untouched)
-  if (f._pv !== f.state) {
-    if (f.state === 'down') puffDust(sx, gy, 7, 90);
-    f._pv = f.state;
-  }
-  if (f._pz > 0 && z === 0 && (f.state === 'jump' || f.state === 'jumpkick' || f.state === 'idle' || f.state === 'walk')) {
-    puffDust(sx, gy, 3, 50);
-  }
-  f._pz = z;
-
-  // shadow
-  var shScale = Math.max(0.3, 1 - z / 160);
-  ctx.fillStyle = 'rgba(0,0,0,0.4)';
+/* ---------- fighters in world space ---------- */
+function drawShadow(x, y, w) {
+  ctx.fillStyle = 'rgba(0,0,0,0.30)';
   ctx.beginPath();
-  ctx.ellipse(sx, gy + 3, 13 * FSCALE[type] * shScale, 4.5 * FSCALE[type] * shScale, 0, 0, Math.PI * 2);
+  ctx.ellipse(x, y + 1, w, 3.5, 0, 0, Math.PI * 2);
   ctx.fill();
-
+}
+function drawFighter(f, type, isPlayer) {
+  if (f.dead && f.deathT > 2.5) return;
+  var pose = poseFor(f, isPlayer);
+  var img = SPR[type][pose];
+  var w = img.width, h = img.height;
+  var x = f.x, y = f.y - f.z - h;
+  var blink = (f.iframes > 0 && Math.floor(S.t * 18) % 2 === 0);
+  drawShadow(x, f.y, w * 0.32);
+  if (type === 'boss') { // separation backdrop: dim the wall behind Big Chrome
+    ctx.fillStyle = 'rgba(8,4,12,0.45)';
+    ctx.beginPath(); ctx.ellipse(x, y + h * 0.45, w * 0.75, h * 0.52, 0, 0, Math.PI * 2); ctx.fill();
+  }
   ctx.save();
-  ctx.translate(sx, gy - z);
-  if (f.iframes > 0 && Math.floor(S.t * 14) % 2 === 0) ctx.globalAlpha = 0.35;
-  ctx.scale(f.facing, 1);
-  try {
-    ctx.drawImage(spr, -dw / 2, -dh + 3);
-  } catch (e) { /* canvas shim safety */ }
-  ctx.restore();
-
-  // hit flash: white silhouette pop on fresh hits
-  if (f.state === 'hit' && f.stateT < 0.08) {
-    ctx.save();
-    ctx.globalAlpha = 0.55;
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(sx - dw / 2, gy - z - dh + 3, dw, dh);
-    ctx.restore();
-  }
-
-  // enemy hp pips
-  if (!isPlayer && f.hp < f.maxHp && f.state !== 'dead') {
-    var wpx = 34 * FSCALE[type];
-    var top = gy - z - dh - 4;
-    ctx.fillStyle = 'rgba(0,0,0,0.6)';
-    ctx.fillRect(sx - wpx / 2, top, wpx, 5);
-    ctx.fillStyle = f.type === 'boss' ? '#c9a227' : '#ff5252';
-    ctx.fillRect(sx - wpx / 2 + 1, top + 1, (wpx - 2) * (f.hp / f.maxHp), 3);
-  }
-  // name tag for boss
-  if (!isPlayer && f.type === 'boss' && f.state !== 'dead') {
-    txt('BIG CHROME', sx, gy - z - dh - 18, 8, '#c9a227', 'center');
-  }
-}
-
-function drawWeaponPickup(wp) {
-  var sx = Math.round(wp.x - S.scrollX);
-  if (sx < -20 || sx > W + 20) return;
-  ctx.fillStyle = 'rgba(65,216,232,0.25)';
-  ctx.beginPath(); ctx.ellipse(sx, wp.y + 2, 12, 4, 0, 0, Math.PI * 2); ctx.fill();
-  ctx.save();
-  ctx.translate(sx, wp.y - 4 + Math.sin(S.t * 4) * 2);
-  ctx.rotate(-0.5);
-  if (wp.kind === 'bat') {
-    ctx.fillStyle = '#8a5a2b';
-    ctx.fillRect(-3, -14, 6, 28);
-    ctx.fillStyle = '#6e451f';
-    ctx.fillRect(-3, 8, 6, 6);
-  } else {
-    ctx.fillStyle = '#2fae5f';
-    ctx.fillRect(-4, -8, 8, 16);
-    ctx.fillStyle = '#1d7a42';
-    ctx.fillRect(-2, -12, 4, 5);
-  }
-  ctx.restore();
-}
-
-/* ---------------- background ---------------- */
-function drawBackground() {
-  var idx = S.stageIdx;
-  var shx = S.shake > 0 ? (Math.random() - 0.5) * 6 : 0;
-  var shy = S.shake > 0 ? (Math.random() - 0.5) * 4 : 0;
-  // far tile (parallax 0.25)
-  var far = FAR[idx], fx = -((S.scrollX * 0.25) % 480);
-  try {
-    ctx.drawImage(far, Math.round(fx), 0);
-    ctx.drawImage(far, Math.round(fx) + 480, 0);
-  } catch (e) {}
-  // mid tile (parallax 0.55)
-  var mid = MID[idx], mx = -((S.scrollX * 0.55) % 480);
-  try {
-    ctx.drawImage(mid, Math.round(mx), 66);
-    ctx.drawImage(mid, Math.round(mx) + 480, 66);
-  } catch (e) {}
-  // near strip (parallax 1.0)
-  try {
-    ctx.drawImage(NEAR[idx], Math.round(-S.scrollX + shx), Math.round(shy));
-  } catch (e) {}
-  drawStageFx();
-  // arena barrier when locked
-  if (S.arena) {
-    ctx.fillStyle = 'rgba(201,162,39,0.85)';
-    ctx.fillRect(W - 8, 60, 8, 140);
-    ctx.fillRect(0, 60, 8, 140);
-    txt('LOCKED', W / 2, 66, 9, '#c9a227', 'center');
-  }
-}
-
-/* ---------------- HUD: portrait boxes, named bars, arcade text ---------------- */
-function drawPortraitBox(x, y, type, name, hpFrac, barColor) {
-  ctx.fillStyle = '#0a0a12';
-  ctx.fillRect(x, y, 26, 26);
-  ctx.fillStyle = '#c9a227';
-  ctx.fillRect(x, y, 26, 2); ctx.fillRect(x, y + 24, 26, 2);
-  ctx.fillRect(x, y, 2, 26); ctx.fillRect(x + 24, y, 2, 26);
-  try { ctx.drawImage(PORTRAIT[type], x + 2, y + 2, 22, 22); } catch (e) {}
-  txt(name, x + 30, y - 1, 9, '#fff');
-  // segmented POW-style hp bar
-  var bx = x + 30, bw = 84;
-  ctx.fillStyle = 'rgba(0,0,0,0.65)';
-  ctx.fillRect(bx - 1, y + 11, bw + 2, 9);
-  var segs = 10, on = Math.ceil(hpFrac * segs);
-  for (var i = 0; i < segs; i++) {
-    ctx.fillStyle = i < on ? barColor : '#2a2a34';
-    ctx.fillRect(bx + i * (bw / segs) + 1, y + 12, bw / segs - 2, 7);
-  }
-}
-
-function drawHUD() {
-  ctx.fillStyle = 'rgba(0,0,0,0.6)';
-  ctx.fillRect(0, 0, W, 30);
-  var p = S.player;
-  drawPortraitBox(6, 2, 'player', 'REY', p.hp / p.maxHp, p.hp > 30 ? '#41d8e8' : '#ff5252');
-  txt('SCORE ' + String(S.score).padStart(6, '0'), 8, 32, 9, '#fff');
-  // center: stage + time
-  var st = S.stages[S.stageIdx];
-  txt('TIME ' + Math.ceil(stageClock), W / 2, 3, 10, '#ffd23f', 'center');
-  txt('STG ' + (S.stageIdx + 1) + ' ' + st.name, W / 2, 16, 8, '#17c3b2', 'center');
-  // right: lives + credit
-  txt('LIVES ' + String(Math.max(S.lives, 0)).padStart(2, '0'), W - 8, 3, 9, '#ff6b8a', 'right');
-  txt('CREDIT 00', W - 8, 16, 8, '#ffd23f', 'right');
-  if (S.paused) txt('II', W - 20, 32, 10, '#ffd23f');
-  // boss bar with portrait
-  if (S.boss) {
-    var b = S.boss;
-    ctx.fillStyle = 'rgba(0,0,0,0.6)';
-    ctx.fillRect(W / 2 - 96, H - 20, 192, 14);
-    try { ctx.drawImage(PORTRAIT.boss, W / 2 - 94, H - 19, 12, 12); } catch (e) {}
-    ctx.fillStyle = '#c9a227';
-    ctx.fillRect(W / 2 - 78, H - 16, 166 * (b.hp / b.maxHp), 6);
-    ctx.strokeStyle = '#c9a227';
-    ctx.strokeRect(W / 2 - 78.5, H - 16.5, 167, 7);
-    txt('BIG CHROME', W / 2 + 10, H - 32, 8, '#c9a227', 'center');
-  }
-  // combo counter
-  if (p.combo >= 2 && p.comboT > 0) txt(p.combo + ' HITS!', W - 8, 32, 10, '#ffd23f', 'right');
-  // message banner
-  if (S.msg) {
-    ctx.fillStyle = 'rgba(0,0,0,0.55)';
-    var mw = ctx.measureText ? 0 : 0;
-    txt(S.msg, W / 2, 88, 13, '#ffd23f', 'center');
-  }
-}
-
-/* ---------------- particles: impact stars, embers, capped ---------------- */
-function drawParticles() {
-  var list = S.particles;
-  var n = Math.min(list.length, 120); // hard cap: perf before detail
-  for (var i = 0; i < n; i++) {
-    var pt = list[i];
-    var a = 1 - pt.t / pt.life;
-    var psx = Math.round(pt.x - S.scrollX);
-    var psy = Math.round(pt.y - pt.z);
-    if ((pt.color === '#ffd23f' || pt.color === '#ff5252') && pt.t < 0.15) {
-      // impact star: 4-point burst
-      ctx.save();
-      ctx.globalAlpha = a;
-      ctx.translate(psx, psy);
-      ctx.rotate(Math.PI / 4);
-      ctx.fillStyle = '#ffffff';
-      var r = pt.size + 5;
-      ctx.fillRect(-r, -1.5, r * 2, 3);
-      ctx.fillRect(-1.5, -r, 3, r * 2);
-      ctx.fillStyle = pt.color;
-      ctx.fillRect(-r + 2, -1, (r - 2) * 2, 2);
-      ctx.fillRect(-1, -r + 2, 2, (r - 2) * 2);
-      ctx.restore();
-    } else {
-      ctx.globalAlpha = a;
-      ctx.fillStyle = pt.color;
-      ctx.fillRect(psx - pt.size / 2, psy - pt.size / 2, pt.size, pt.size);
-      ctx.globalAlpha = 1;
-    }
-  }
-  // render-side dust
-  for (var d = 0; d < vdust.length; d++) {
-    var q = vdust[d];
-    ctx.globalAlpha = 0.5 * (1 - q.t / q.life);
-    ctx.fillStyle = '#b8b0a0';
-    ctx.beginPath();
-    ctx.ellipse(q.x - S.scrollX, q.y, 5 + q.t * 14, 3 + q.t * 6, 0, 0, Math.PI * 2);
-    ctx.fill();
+  if (f.facing < 0) { ctx.translate(x, 0); ctx.scale(-1, 1); ctx.drawImage(img, -w / 2, y, w, h); }
+  else ctx.drawImage(img, x - w / 2, y, w, h);
+  if (blink) { // hurt blink: darken via overlay
+    ctx.globalAlpha = 0.45;
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(x - w / 2, y, w, h);
     ctx.globalAlpha = 1;
   }
-}
-
-/* ---------------- screens ---------------- */
-function drawMarqueeTitle() {
-  // gold-marquee STREET KINGS with original crown motif
-  drawCrown(ctx, W / 2 - 30, 34, 60, 34, '#c9a227', '#d83636');
-  ctx.fillStyle = 'rgba(255,233,163,0.25)';
-  ctx.fillRect(W / 2 - 110, 76, 220, 3);
-  goldTxt('STREET', W / 2, 84, 34, 'center');
-  goldTxt('KINGS', W / 2, 118, 34, 'center');
-  ctx.fillStyle = 'rgba(255,233,163,0.25)';
-  ctx.fillRect(W / 2 - 110, 156, 220, 3);
-}
-function drawTitle() {
-  // stage-1 sunset backdrop, dimmed
-  var far = FAR[0];
-  try { ctx.drawImage(far, 0, 0); ctx.drawImage(far, 240, 0); } catch (e) {}
-  var mid = MID[0];
-  try { ctx.drawImage(mid, 0, 66); } catch (e) {}
-  ctx.fillStyle = 'rgba(5,5,12,0.62)';
-  ctx.fillRect(0, 0, W, H);
-  var logo = ART['cwi-logo'];
-  if (logo && logo.complete && logo.naturalWidth) {
-    try { ctx.drawImage(logo, 14, 12, 40, 40); } catch (e) {}
-  } else {
-    ctx.fillStyle = '#17c3b2';
-    ctx.beginPath(); ctx.arc(34, 32, 17, 0, Math.PI * 2); ctx.fill();
-    txt('CWI', 34, 26, 10, '#0a0a12', 'center');
+  ctx.restore();
+  if (!isPlayer && f.hp < f.maxHp && f.state !== 'dead' && f.state !== 'down') {
+    // hp pips
+    var n = Math.ceil(f.maxHp / 8), cur = Math.ceil(f.hp / 8);
+    var bx = x - n * 3;
+    for (var i = 0; i < n; i++) {
+      ctx.fillStyle = i < cur ? '#41d83f' : '#3a1518';
+      ctx.fillRect(bx + i * 6, y - 8, 5, 3);
+    }
   }
-  txt('CUMULATIVE WEB INC', W - 14, 16, 8, '#17c3b2', 'right');
-  drawMarqueeTitle();
-  // hero + boss sprites flanking the marquee
-  try {
-    ctx.drawImage(SPR.player.victory, 36, 120, 56, 64);
-    ctx.drawImage(SPR.boss.idle0, W - 108, 108, 81, 92);
-  } catch (e) {}
-  txt('The Chrome Vipers are smashing the block.', W / 2, 168, 8, '#ccc', 'center');
-  txt('Rey takes back the neon streets.', W / 2, 179, 8, '#ccc', 'center');
-  if (Math.floor(S.t * 2) % 2 === 0) goldTxt('TAP OR PRESS ENTER', W / 2, 192, 11, 'center');
-  txt('J PUNCH · K KICK · SPACE JUMP', W / 2, 206, 7, '#777', 'center');
-}
-
-function drawEnd(win) {
-  drawBackground();
-  ctx.fillStyle = 'rgba(0,0,0,0.7)';
-  ctx.fillRect(0, 0, W, H);
-  if (win) {
-    try { ctx.drawImage(SPR.player.victory, W / 2 - 42, 40, 84, 96); } catch (e) {}
-    goldTxt('BLOCK RECLAIMED!', W / 2, 140, 20, 'center');
-  } else {
-    txt('GAME OVER', W / 2, 60, 22, '#ff5252', 'center');
+  if (type === 'boss' && f.state !== 'dead') {
+    ctx.font = 'bold 8px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    ctx.fillText('BIG CHROME', x + 1, y - 19);
+    ctx.fillStyle = '#ffd23f';
+    ctx.fillText('BIG CHROME', x, y - 20);
   }
-  txt('SCORE ' + String(S.score).padStart(6, '0'), W / 2, 164, 12, '#fff', 'center');
-  if (win) {
-    txt('The Kings own the neon streets again.', W / 2, 180, 8, '#17c3b2', 'center');
-  } else {
-    txt('The Vipers hold the block... for now.', W / 2, 132, 8, '#888', 'center');
-  }
-  txt('CREDIT 00', W / 2, 192, 8, '#ffd23f', 'center');
-  if (Math.floor(S.t * 2) % 2 === 0) txt('TAP OR PRESS ENTER', W / 2, 202, 9, '#fff', 'center');
 }
-
-function render() {
+function drawWeaponPickup(wp) {
+  drawShadow(wp.x, wp.y, 12);
   ctx.save();
-  if (S.screen === 'title') { drawTitle(); }
-  else if (S.screen === 'gameover') { drawEnd(false); }
-  else if (S.screen === 'victory') { drawEnd(true); }
-  else {
+  ctx.translate(wp.x, wp.y - 6);
+  ctx.rotate(-0.5);
+  ctx.fillStyle = '#8a5a2b';
+  ctx.fillRect(-13, -2.5, 26, 5);
+  ctx.fillStyle = '#6e451f';
+  ctx.fillRect(-13, 0, 26, 2.5);
+  ctx.restore();
+}
+
+/* ---------- full-bleed background under the camera ---------- */
+function drawBackground() {
+  paraDraw(FAR[S.stageIdx], 0.25);
+  paraDraw(MID[S.stageIdx], 0.55);
+  try { ctx.drawImage(NEAR[S.stageIdx], 0, 0); } catch (e) {}
+  drawStageFx();
+}
+
+/* ---------- particles (world coords, additive-ish via alpha) ---------- */
+function drawParticles() {
+  for (var i = 0; i < S.particles.length; i++) {
+    var p = S.particles[i];
+    var a = 1 - p.t / p.life;
+    ctx.globalAlpha = Math.max(0, a);
+    ctx.fillStyle = p.color;
+    var sz = p.size || 3;
+    ctx.fillRect(p.x - sz / 2, p.y - p.z - sz / 2, sz, sz);
+  }
+  ctx.globalAlpha = 1;
+  for (var j = 0; j < vdust.length; j++) {
+    var d = vdust[j];
+    ctx.globalAlpha = 0.35 * (1 - d.t / d.life);
+    ctx.fillStyle = '#b8b0a0';
+    ctx.fillRect(d.x - 3, d.y - 3, 6, 6);
+  }
+  ctx.globalAlpha = 1;
+}
+
+/* ---------- arcade HUD: named portrait + bars, text directly on the art ---------- */
+function drawPortraitBox(g, x, y, type, size) {
+  g.fillStyle = '#0a0a12';
+  g.fillRect(x, y, size, size);
+  try { g.drawImage(PORTRAIT[type], x + 2, y + 2, size - 4, size - 4); } catch (e) {}
+  g.strokeStyle = '#c9a227';
+  g.lineWidth = Math.max(1, size / 18);
+  g.strokeRect(x + 0.5, y + 0.5, size - 1, size - 1);
+}
+function segBar(x, y, w, h, frac, color) {
+  ctx.fillStyle = '#101018';
+  ctx.fillRect(x - 1, y - 1, w + 2, h + 2);
+  var segs = 12, sw = w / segs;
+  for (var i = 0; i < segs; i++) {
+    ctx.fillStyle = (i / segs) < frac ? color : '#3a2028';
+    ctx.fillRect(x + i * sw + 0.5, y, sw - 1, h);
+  }
+}
+function drawHUD() {
+  var p = S.player;
+  screenTransform();
+  var hs = CAM.ch / 216, hw = CAM.cw / hs;
+  ctx.save();
+  ctx.scale(hs, hs);
+  ctx.lineWidth = 1;
+  var compact = hw < 170;
+  if (!compact) {
+    drawPortraitBox(ctx, 6, 5, 'player', 26);
+    htxt('REY', 38, 3, 11, '#fff');
+    var hpf = Math.max(0, p.hp / p.maxHp);
+    segBar(38, 17, 110, 11, hpf, hpf > 0.5 ? '#41d83f' : hpf > 0.25 ? '#ffd23f' : '#ff5252');
+    htxt('SCORE ' + String(S.score).padStart(6, '0'), 6, 36, 10, '#ffd23f');
+    htxt('TIME ' + Math.ceil(stageClock), hw / 2, 4, 13, '#ffd23f', 'center');
+    htxt('STG ' + (S.stageIdx + 1) + ' ' + STAGE_META[S.stageIdx].name, hw / 2, 21, 8, '#17c3b2', 'center');
+    htxt('LIVES ' + p.lives, hw - 6, 4, 11, '#ff6b8a', 'right');
+    htxt('CREDIT 00', hw - 6, 21, 8, '#ffd23f', 'right');
+  } else {
+    // compact portrait HUD for narrow screens: two rows, nothing clipped
+    drawPortraitBox(ctx, 4, 3, 'player', 20);
+    htxt('REY', 28, 1, 9, '#fff');
+    var hpf2 = Math.max(0, p.hp / p.maxHp);
+    segBar(28, 13, 58, 8, hpf2, hpf2 > 0.5 ? '#41d83f' : hpf2 > 0.25 ? '#ffd23f' : '#ff5252');
+    htxt('TIME ' + Math.ceil(stageClock), hw - 4, 2, 11, '#ffd23f', 'right');
+    fitTxt('SCORE ' + String(S.score).padStart(6, '0'), 4, 27, 8, '#ffd23f', 'left', hw * 0.42);
+    fitTxt('S' + (S.stageIdx + 1), hw / 2, 27, 8, '#17c3b2', 'center', hw * 0.16);
+    fitTxt('LIVES ' + p.lives, hw - 4, 27, 8, '#ff6b8a', 'right', hw * 0.32);
+    htxt('CREDIT 00', hw - 4, 38, 7, '#ffd23f', 'right');
+  }
+  // boss bar
+  if (S.boss && !S.boss.dead) {
+    var bw = Math.min(hw - 20, 170);
+    var bx0 = hw / 2 - bw / 2, by0 = 216 - 22;
+    drawPortraitBox(ctx, bx0 - 2, by0 - 14, 'boss', 16);
+    htxt('BIG CHROME', hw / 2, by0 - 13, 9, '#ffd23f', 'center');
+    segBar(bx0, by0, bw, 9, Math.max(0, S.boss.hp / S.boss.maxHp), '#d83636');
+  }
+  // combo
+  if (p.combo >= 2 && p.state !== 'idle') {
+    htxt(p.combo + ' HITS!', hw - 8, 46, 11, '#ff9a3f', 'right');
+  }
+  // message banner
+  if (S.msgT > 0) {
+    ctx.globalAlpha = Math.min(1, S.msgT * 2);
+    goldTxt(S.msg, hw / 2, 64, 15, 'center');
+    ctx.globalAlpha = 1;
+  }
+  ctx.restore();
+}
+
+/* ---------- gold marquee title card (reused on title + end screens) ---------- */
+function drawMarqueeTitle(cx, cy, scale) {
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.scale(scale, scale);
+  drawCrown(ctx, -30, -46, 60, 30, '#c9a227', '#d83636');
+  goldTxt('STREET', 0, -12, 26, 'center');
+  goldTxt('KINGS', 0, 16, 26, 'center');
+  ctx.restore();
+}
+
+/* ---------- title screen: art fills the canvas, marquee + heroes on top ---------- */
+function drawTitle() {
+  updateCamera();
+  worldTransform();
+  paraDraw(FAR[0], 0.25);
+  paraDraw(MID[0], 0.55);
+  try { ctx.drawImage(NEAR[0], 0, 0); } catch (e) {}
+  screenTransform();
+  ctx.fillStyle = 'rgba(5,5,12,0.55)';
+  ctx.fillRect(0, 0, CAM.cw, CAM.ch);
+  var hs = CAM.ch / 216, hw = CAM.cw / hs;
+  ctx.save();
+  ctx.scale(hs, hs);
+  // small CWI logo chip + wordmark
+  drawArtLogo(ctx, 6, 4, 12);
+  fitTxt('CUMULATIVE WEB INC', 22, 4, 7, '#c9a227', 'left', hw - 30);
+  drawMarqueeTitle(hw / 2, 58, hw < 170 ? 0.85 : 1.2);
+  // hero vs boss flanking the marquee
+  var hero = SPR.player.victory, boss = SPR.boss.victory;
+  var hh = hw < 170 ? 44 : 58, bh = hw < 170 ? 56 : 72;
+  var hyb = 158;   // fighters' feet baseline
+  try {
+    ctx.drawImage(hero, hw * 0.08, hyb - hh, hh * hero.width / hero.height, hh);
+    ctx.drawImage(boss, hw * 0.92 - bh * boss.width / boss.height, hyb - bh,
+                  bh * boss.width / boss.height, bh);
+  } catch (e) {}
+  fitTxt('The King\'s Block has fallen to Big Chrome\'s crew.', hw / 2, 166, 7, '#fff', 'center', hw - 12);
+  fitTxt('Rey hits the Neon Row to take it back.', hw / 2, 176, 7, '#fff', 'center', hw - 12);
+  if (Math.floor(S.t * 2) % 2 === 0) goldTxt('TAP TO START', hw / 2, 188, hw < 170 ? 9 : 12, 'center');
+  fitTxt('ARROWS/WASD MOVE · J PUNCH · K KICK · SPACE JUMP', hw / 2, 202, 6, '#8a8a92', 'center', hw - 8);
+  fitTxt('© CUMULATIVE WEB INC — AN ORIGINAL BEAT-\'EM-UP', hw / 2, 210, 6, '#5a5a66', 'center', hw - 8);
+  ctx.restore();
+}
+
+/* ---------- end screens ---------- */
+function drawEnd(win) {
+  updateCamera();
+  worldTransform();
+  drawBackground();
+  if (win) {
+    var hero2 = SPR.player.victory;
+    var hw2 = 72;
+    try { ctx.drawImage(hero2, S.player.x - hw2 / 2, S.player.y - hero2.height, hw2, hero2.height); } catch (e) {}
+  }
+  screenTransform();
+  ctx.fillStyle = win ? 'rgba(5,20,12,0.55)' : 'rgba(20,5,8,0.65)';
+  ctx.fillRect(0, 0, CAM.cw, CAM.ch);
+  var hs = CAM.ch / 216, hw = CAM.cw / hs;
+  ctx.save();
+  ctx.scale(hs, hs);
+  drawMarqueeTitle(hw / 2, 52, 0.9);
+  if (win) {
+    goldTxt('CITY RECLAIMED!', hw / 2, 92, 16, 'center');
+    htxt('FINAL SCORE ' + String(S.score).padStart(6, '0'), hw / 2, 118, 10, '#ffd23f', 'center');
+    htxt('The Block is yours, King.', hw / 2, 132, 8, '#fff', 'center');
+  } else {
+    goldTxt('GAME OVER', hw / 2, 92, 18, 'center');
+    htxt('SCORE ' + String(S.score).padStart(6, '0'), hw / 2, 118, 10, '#ffd23f', 'center');
+    htxt('The Block still needs its King.', hw / 2, 132, 8, '#fff', 'center');
+  }
+  if (Math.floor(S.t * 2) % 2 === 0) goldTxt('TAP TO RETRY', hw / 2, 158, 11, 'center');
+  ctx.restore();
+}
+
+/* ============================================================
+   RENDER — full-bleed camera frame. No letterbox anywhere: every
+   screen paints the stage (or title art) across the whole canvas
+   first, then HUD/text on top. No per-frame allocations.
+   ============================================================ */
+function render() {
+  updateCamera();
+  ctx.save();
+  if (S.screen === 'title') {
+    drawTitle();
+  } else if (S.screen === 'gameover') {
+    drawEnd(false);
+  } else if (S.screen === 'victory') {
+    drawEnd(true);
+  } else {
+    worldTransform();
     drawBackground();
-    // depth sort: weapons, fighters by y
-    var draws = [];
-    for (var i = 0; i < S.weapons.length; i++) draws.push({ y: S.weapons[i].y, k: 'w', o: S.weapons[i] });
-    draws.push({ y: S.player.y, k: 'p', o: S.player });
-    for (var j = 0; j < S.enemies.length; j++) draws.push({ y: S.enemies[j].y, k: 'e', o: S.enemies[j] });
+    // depth-sorted draws: weapons, fighters, particles
+    var i, draws = [];
+    for (i = 0; i < S.weapons.length; i++) draws.push({ y: S.weapons[i].y, k: 0, o: S.weapons[i] });
+    draws.push({ y: S.player.y, k: 1, o: S.player });
+    for (i = 0; i < S.enemies.length; i++) draws.push({ y: S.enemies[i].y, k: 2, o: S.enemies[i] });
     draws.sort(function (a, b) { return a.y - b.y; });
-    for (var d = 0; d < draws.length; d++) {
-      var it = draws[d];
-      if (it.k === 'w') drawWeaponPickup(it.o);
-      else if (it.k === 'p') drawFighter(it.o, true);
-      else drawFighter(it.o, false);
+    for (i = 0; i < draws.length; i++) {
+      var d = draws[i];
+      if (d.k === 0) drawWeaponPickup(d.o);
+      else if (d.k === 1) drawFighter(d.o, 'player', true);
+      else drawFighter(d.o, d.o.type, false);
     }
     drawParticles();
     drawHUD();
     if (S.paused) {
-      ctx.fillStyle = 'rgba(0,0,0,0.6)';
-      ctx.fillRect(0, 0, W, H);
-      txt('PAUSED', W / 2, 96, 20, '#ffd23f', 'center');
-      txt('P / TAP TO RESUME', W / 2, 126, 9, '#fff', 'center');
+      screenTransform();
+      ctx.fillStyle = 'rgba(0,0,0,0.55)';
+      ctx.fillRect(0, 0, CAM.cw, CAM.ch);
+      var hs2 = CAM.ch / 216, hw2 = CAM.cw / hs2;
+      ctx.save();
+      ctx.scale(hs2, hs2);
+      goldTxt('PAUSED', hw2 / 2, 96, 18, 'center');
+      htxt('P / TAP PAUSE TO RESUME', hw2 / 2, 122, 8, '#fff', 'center');
+      ctx.restore();
     }
   }
   ctx.restore();
 }
 
-/* test/config surface (node harness) */
+/* ---------------- config surface (tests + harnesses) ---------------- */
+var __CFG = {
+  fighterFrac: CAM.fighterFrac,
+  signW: SIGN_W,
+  poses: POSES.length,
+  spriteFrames: SPRITE_COUNT,
+  particleCap: 160,
+  stages: STAGE_META.map(function (s) { return s.name; })
+};
 if (typeof global !== 'undefined') {
-  global.__CFG = { signW: SIGN_W, signH: SIGN_H, spriteFrames: SPRITE_COUNT, poses: POSES.length };
+  global.__CFG = __CFG;
+  global.__SPR = SPR;
+  global.__drawFighterArt = drawFighterArt;
+  global.__fitCanvas = fitCanvas;
+  global.__CAM = { x: CAM.x, y: CAM.y, viewW: CAM.viewW, viewH: CAM.viewH,
+                   scale: CAM.scale, cw: CAM.cw, ch: CAM.ch,
+                   fighterFrac: CAM.fighterFrac };
 }
 
 /* ---------------- boot ---------------- */
+fitCanvas();
+try { ctx.imageSmoothingEnabled = false; } catch (e) {}
+if (typeof window.addEventListener !== 'undefined') {
+  window.addEventListener('resize', fitCanvas);
+  window.addEventListener('orientationchange', function () {
+    setTimeout(fitCanvas, 120);
+    setTimeout(fitCanvas, 600);
+  });
+}
 queueFrame();
 
 })();
