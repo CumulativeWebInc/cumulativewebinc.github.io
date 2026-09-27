@@ -65,6 +65,7 @@ function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
 var W = 224, H = 256;
 var GRAV = 1050;          // px/s^2
 var JUMP_V = 235;         // initial jump velocity -> apex ~26px
+var BIG_JUMP_V = 318;     // double-tap jump (2026-09-27, Black's request) -> apex ~48px
 var WALK = 74;            // px/s
 var CLIMB = 58;           // px/s ladder
 var FALL_DEATH = 26;      // fall distance (px) that kills
@@ -346,14 +347,24 @@ function ladderSpan(L, lad) {
    stage-2 ladder did nothing because he was ~10px outside the old 7px
    window, with no feedback why.) */
 var GRAB_DX = 13;
-function ladderAt(L, x, feetY) {
-  var best = null, bestD = GRAB_DX + 1;
+function ladderAt(L, x, feetY, dir) {
+  /* dir-aware (2026-09-27): where two ladders share an x and meet at one
+     platform (stage 4's pair at x=112), a swipe UP must grab the ladder that
+     goes UP from here and a swipe DOWN the one that goes DOWN — nearest-x
+     alone grabbed the wrong one, the climb instantly "exited", and the
+     ladder felt stuck/broken. Alignment with the swipe direction scores
+     first, x-distance breaks ties. */
+  var best = null, bestScore = Infinity;
   for (var i = 0; i < L.ladders.length; i++) {
     var lad = L.ladders[i];
     var d = Math.abs(x - lad.x);
-    if (d > GRAB_DX || d >= bestD) continue;
+    if (d > GRAB_DX) continue;
     var sp = ladderSpan(L, lad);
-    if (feetY >= sp.yTop - 6 && feetY <= sp.yBot + 6) { best = { lad: lad, sp: sp }; bestD = d; }
+    if (feetY < sp.yTop - 6 || feetY > sp.yBot + 6) continue;
+    var align = dir === 'up' ? Math.abs(feetY - sp.yBot) :
+                dir === 'down' ? Math.abs(feetY - sp.yTop) : 0;
+    var score = align * 1000 + d;
+    if (score < bestScore) { best = { lad: lad, sp: sp }; bestScore = score; }
   }
   return best;
 }
@@ -422,7 +433,7 @@ function updatePlayer(s, st, inp, dt) {
   if ((inp.up || inp.down) && !p.jumping) {
     // clear the re-grab debounce once the player walks away from the ladder just exited
     if (Math.abs(p.x - (p.noRegrabX || 0)) > 12) p.noRegrab = null;
-    var hit = ladderAt(L, p.x, p.y);
+    var hit = ladderAt(L, p.x, p.y, inp.up && !inp.down ? 'up' : inp.down && !inp.up ? 'down' : null);
     if (hit && hit.lad === p.noRegrab) hit = null; // still holding: no instant re-grab
     if (hit && !hit.lad.broken || hit && inp.down) {
       // up onto broken ladder not allowed past its span; ladderAt already limited
@@ -490,10 +501,10 @@ function updatePlayer(s, st, inp, dt) {
       }
     }
 
-    /* jump */
+    /* jump (double-tap = bigger jump on touch, 2026-09-27) */
     if (inp.jump && !inp._prevJump) {
       p.jumping = true;
-      p.vy = -JUMP_V;
+      p.vy = -(inp.bigJump ? BIG_JUMP_V : JUMP_V);
       p.vx = p.dir * WALK; // committed: no air control (authentic)
       p.fallFrom = p.y;
       st.jumpId++;
@@ -501,7 +512,11 @@ function updatePlayer(s, st, inp, dt) {
       s.events.push({ t: 'jump' });
     }
   } else {
-    /* airborne: NO air control — vx locked at takeoff */
+    /* airborne: NO air control — vx locked at takeoff.
+       Double-tap boost (2026-09-27, Black's request): a second quick tap
+       while still rising upgrades the in-flight jump to big-jump velocity,
+       so double-tap on the JUMP button = one larger jump. */
+    if (inp.bigJump && p.vy < 0) p.vy = -BIG_JUMP_V;
     p.vy += GRAV * dt;
     p.x += p.vx * dt;
     p.y += p.vy * dt;
@@ -1062,7 +1077,7 @@ function resetRun(s) {
 /* ---------------- exports ---------------- */
 return {
   W: W, H: H,
-  GRAV: GRAV, JUMP_V: JUMP_V, WALK: WALK, CLIMB: CLIMB,
+  GRAV: GRAV, JUMP_V: JUMP_V, BIG_JUMP_V: BIG_JUMP_V, WALK: WALK, CLIMB: CLIMB,
   FALL_DEATH: FALL_DEATH,
   PTS_BARREL_JUMP: PTS_BARREL_JUMP,
   PTS_BARREL_SMASH: PTS_BARREL_SMASH,
@@ -1457,7 +1472,20 @@ var Audio2 = (function () {
 /* ================= INPUT (keyboard + touch) ================= */
 var Input = (function () {
   var st = { left: false, right: false, up: false, down: false, jump: false, pause: false,
-             touchUp: false, touchDown: false };
+             touchUp: false, touchDown: false, bigJump: false };
+  /* double-tap = bigger jump (2026-09-27, Black's request): two quick taps on
+     the JUMP button — or two quick taps on the game canvas — launch a higher
+     jump (apex ~48px vs ~26px). The flag rides the next input snapshot and
+     the logic consumes it on the jump's edge. */
+  var lastJumpTapT = 0;
+  function noteJumpTap() {
+    var now = Date.now();
+    if (now - lastJumpTapT < 350) {
+      st.bigJump = true;
+      setTimeout(function () { st.bigJump = false; }, 500);
+    }
+    lastJumpTapT = now;
+  }
   var keymap = {
     ArrowLeft: 'left', KeyA: 'left',
     ArrowRight: 'right', KeyD: 'right',
@@ -1481,7 +1509,7 @@ var Input = (function () {
   function bindBtn(id, name) {
     var el = document.getElementById(id);
     if (!el) return;
-    var on = function (e) { e.preventDefault(); st[name] = true; Audio2.ensure(); };
+    var on = function (e) { e.preventDefault(); st[name] = true; Audio2.ensure(); if (name === 'jump') noteJumpTap(); };
     var off = function (e) { e.preventDefault(); st[name] = false; };
     el.addEventListener('pointerdown', on);
     el.addEventListener('pointerup', off);
@@ -1489,14 +1517,19 @@ var Input = (function () {
     el.addEventListener('pointerleave', off);
     el.addEventListener('contextmenu', function (e) { e.preventDefault(); });
   }
-  /* swipe up/down on the canvas and hold to climb ladders (touch devices) */
+  /* swipe up/down on the canvas and hold to climb ladders (touch devices).
+     Double-tap on the canvas = big jump (2026-09-27, Black's request). */
   function bindSwipe() {
     var cv = document.getElementById('game');
     if (!cv || !cv.addEventListener) return;
     var tid = null, y0 = 0;
+    var TAP_MAX = 8; // px: a touch that moves more than this is a swipe, not a tap
+    var tapT0 = 0, tapX0 = 0, tapY0 = 0, tapMoved = 0;
+    var lastTapEndT = 0, lastTapX = 0, lastTapY = 0;
     cv.addEventListener('touchstart', function (e) {
       var t = e.changedTouches[0];
       tid = t.identifier; y0 = t.clientY;
+      tapT0 = Date.now(); tapX0 = t.clientX || 0; tapY0 = t.clientY; tapMoved = 0;
     }, { passive: true });
     cv.addEventListener('touchmove', function (e) {
       if (tid === null) return;
@@ -1515,6 +1548,8 @@ var Input = (function () {
           var dy = t.clientY - y0;
           st.touchUp = dy < -TH;
           st.touchDown = dy > TH;
+          var mv = Math.abs((t.clientX || 0) - tapX0) + Math.abs(t.clientY - tapY0);
+          if (mv > tapMoved) tapMoved = mv;
         }
       }
     }, { passive: true });
@@ -1523,6 +1558,29 @@ var Input = (function () {
       for (var i = 0; i < e.changedTouches.length; i++) {
         if (e.changedTouches[i].identifier === tid) {
           tid = null; st.touchUp = false; st.touchDown = false;
+          /* tap tracking for double-tap big jump: a quick, near-motionless
+             touch is a tap; two taps close in time and space -> big jump
+             (gameplay only; title/game-over taps belong to the boot
+             handler). A swipe between taps breaks the pair, so a
+             tap-then-swipe can never misfire as a jump. */
+          var t = e.changedTouches[i];
+          if (Date.now() - tapT0 < 250 && tapMoved < TAP_MAX) {
+            var now = Date.now();
+            var tx = t.clientX || 0, ty = t.clientY;
+            if (now - lastTapEndT < 350 &&
+                Math.abs(tx - lastTapX) < 24 && Math.abs(ty - lastTapY) < 24 &&
+                typeof S !== 'undefined' && S && S.screen === 'play') {
+              lastTapEndT = 0; // consume: a triple-tap starts a fresh pair
+              st.jump = true; Audio2.ensure();
+              st.bigJump = true; lastJumpTapT = now;
+              setTimeout(function () { st.jump = false; }, 140);
+              setTimeout(function () { st.bigJump = false; }, 500);
+            } else {
+              lastTapEndT = now; lastTapX = tx; lastTapY = ty;
+            }
+          } else {
+            lastTapEndT = 0;
+          }
         }
       }
     }
@@ -1542,7 +1600,7 @@ var Input = (function () {
     },
     snapshot: function () {
       return { left: st.left, right: st.right, up: st.up || st.touchUp, down: st.down || st.touchDown, jump: st.jump, pause: st.pause,
-               touchUp: st.touchUp, touchDown: st.touchDown };
+               touchUp: st.touchUp, touchDown: st.touchDown, bigJump: st.bigJump };
     }
   };
 })();
@@ -1986,7 +2044,7 @@ Input.bindTouch();
 try {
   if ('ontouchstart' in window || (navigator && navigator.maxTouchPoints > 0)) {
     var he = document.getElementById('hint');
-    if (he) he.innerHTML = '&#9664; &#9654; MOVE &middot; JUMP &middot; SWIPE &#9650;/&#9660; ON GAME TO CLIMB';
+    if (he) he.innerHTML = '&#9664; &#9654; MOVE &middot; JUMP &middot; 2&times;TAP JUMP = BIG &middot; SWIPE &#9650;/&#9660; ON GAME TO CLIMB';
   }
 } catch (e) {}
 fit();
