@@ -303,6 +303,9 @@ function freshPlayer(L) {
     vx: 0, vy: 0, dir: 1,
     ground: platKey(ps.girder),   // {girder} | {elevator:i} | null
     climbing: null,               // ladder ref
+    climbAuto: null,             // 'up'|'down' — swipe-committed climb: a momentary
+                                // swipe grabs the ladder, and the climb then finishes
+                                // to the top (or bottom) even after the finger lifts
     noRegrab: null,               // ladder just exited: held input can't re-grab it
     noRegrabX: 0,
     jumping: false,
@@ -372,26 +375,44 @@ function updatePlayer(s, st, inp, dt) {
   /* climbing */
   if (p.climbing) {
     var sp = ladderSpan(L, p.climbing);
-    if (inp.up) p.y -= CLIMB * dt;
-    if (inp.down) p.y += CLIMB * dt;
+    if (inp.up) { p.y -= CLIMB * dt; p.climbAuto = 'up'; }
+    else if (inp.down) { p.y += CLIMB * dt; p.climbAuto = 'down'; }
+    /* swipe-committed climb (2026-09-27): a swipe is momentary — once a swipe
+       grabs the ladder, the climb finishes to the top (or the descent to the
+       bottom) even after the finger lifts, so the player can never hang
+       stranded mid-ladder. A fresh swipe down reverses into a committed
+       descent. Keyboard holds keep the original hold-to-climb feel. */
+    else if (p.climbAuto === 'up') p.y -= CLIMB * dt;
+    else if (p.climbAuto === 'down') p.y += CLIMB * dt;
+    var climbingUp = !!inp.up || (!inp.up && !inp.down && p.climbAuto === 'up');
+    var climbingDown = !!inp.down || (!inp.up && !inp.down && p.climbAuto === 'down');
     p.x = p.climbing.x;
     p.jumping = false;
-    if (p.y <= sp.yTop + 2) { // reached top of ladder
+    /* exits require actual travel from the grab point (2026-09-27): grabbing
+       a ladder from the platform at its top and swiping down must START a
+       descent, not instantly "exit at top" */
+    var movedUp = p.y < p.climbEntryY - 4;
+    var movedDown = p.y > p.climbEntryY + 4;
+    if (p.y <= sp.yTop + 2 && movedUp && !climbingDown) {
+      // reached the top by climbing up -> mount the platform above
       if (p.climbing.broken) {
         p.y = sp.yTop; // broken ladder dead-ends: stay on it
+        p.climbAuto = null; // commitment ends at the dead end; swipe down to leave
       } else {
         var exited = p.climbing;
-        p.y = sp.yTop; p.climbing = null;
+        p.y = sp.yTop; p.climbing = null; p.climbAuto = null;
         p.ground = platKey(p.climbingGTop);
         // debounce: a held climb input must not instantly re-grab this ladder
         p.noRegrab = exited; p.noRegrabX = p.x;
       }
-    } else if (p.y >= sp.yBot - 2 && p.y > p.climbEntryY + 4) {
-      // reached bottom (and actually descended — not the entry frame)
+    } else if (p.y >= sp.yBot - 2 && movedDown && !climbingUp) {
+      // reached the bottom by descending -> step onto the lower platform
       var exitedB = p.climbing;
-      p.y = sp.yBot; p.climbing = null;
+      p.y = sp.yBot; p.climbing = null; p.climbAuto = null;
       p.ground = platKey(p.climbingGBot);
       p.noRegrab = exitedB; p.noRegrabX = p.x;
+    } else if (p.climbing.broken && p.y < sp.yTop) {
+      p.y = sp.yTop; // broken ladder: never climb past its top
     }
     // jump off ladder? original: no. keep authentic.
     return;
@@ -412,6 +433,10 @@ function updatePlayer(s, st, inp, dt) {
         p.climbingGTop = hit.lad.gTop;
         p.climbingGBot = hit.lad.gBot;
         p.climbEntryY = p.y;
+        /* a swipe grab commits the climb (see climbing branch): the action
+           finishes even after the finger lifts */
+        p.climbAuto = (inp.touchUp && inp.up) ? 'up' :
+                      (inp.touchDown && inp.down) ? 'down' : null;
         p.x = hit.lad.x; // snap assist: align to the ladder on grab
         p.vx = 0; p.vy = 0;
         return;
@@ -1516,7 +1541,8 @@ var Input = (function () {
       bindBtn('btn-jump', 'jump');
     },
     snapshot: function () {
-      return { left: st.left, right: st.right, up: st.up || st.touchUp, down: st.down || st.touchDown, jump: st.jump, pause: st.pause };
+      return { left: st.left, right: st.right, up: st.up || st.touchUp, down: st.down || st.touchDown, jump: st.jump, pause: st.pause,
+               touchUp: st.touchUp, touchDown: st.touchDown };
     }
   };
 })();
