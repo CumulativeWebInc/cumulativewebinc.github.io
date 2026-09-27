@@ -337,14 +337,22 @@ function ladderSpan(L, lad) {
   if (lad.broken) yTop = yTop + (yBot - yTop) * 0.42; // broken: doesn't reach
   return { yTop: yTop, yBot: yBot };
 }
+/* Grab window widened 2026-09-27: on touch there is no pixel-precise d-pad,
+   so a swipe NEAR a ladder must grab it — nearest ladder in range wins and
+   the player snaps to its x. (Black's iPhone report: swiping next to a
+   stage-2 ladder did nothing because he was ~10px outside the old 7px
+   window, with no feedback why.) */
+var GRAB_DX = 13;
 function ladderAt(L, x, feetY) {
+  var best = null, bestD = GRAB_DX + 1;
   for (var i = 0; i < L.ladders.length; i++) {
     var lad = L.ladders[i];
-    if (Math.abs(x - lad.x) > 7) continue;
+    var d = Math.abs(x - lad.x);
+    if (d > GRAB_DX || d >= bestD) continue;
     var sp = ladderSpan(L, lad);
-    if (feetY >= sp.yTop - 6 && feetY <= sp.yBot + 6) return { lad: lad, sp: sp };
+    if (feetY >= sp.yTop - 6 && feetY <= sp.yBot + 6) { best = { lad: lad, sp: sp }; bestD = d; }
   }
-  return null;
+  return best;
 }
 
 /* ---------------- player update ---------------- */
@@ -404,6 +412,7 @@ function updatePlayer(s, st, inp, dt) {
         p.climbingGTop = hit.lad.gTop;
         p.climbingGBot = hit.lad.gBot;
         p.climbEntryY = p.y;
+        p.x = hit.lad.x; // snap assist: align to the ladder on grab
         p.vx = 0; p.vy = 0;
         return;
       }
@@ -1040,6 +1049,7 @@ return {
   girderY: girderY,
   addScore: addScore,
   _ladderSpan: ladderSpan,
+  _ladderAt: ladderAt,
   _pickDropX: pickDropX
 };
 })();
@@ -1701,9 +1711,23 @@ function drawPlay(s, st) {
   if (L.top) drawGirder(L.top);
   if (L.topL) drawGirder(L.topL);
   if (L.topR) drawGirder(L.topR);
-  // ladders
+  // ladders (+ climb hint 2026-09-27: the ladder the player can grab right
+  // now pulses, so a swipe that does nothing is never a mystery)
+  var hintLad = null;
+  try {
+    var hp = st.player;
+    if (hp && !hp.climbing && !hp.dead && !hp.jumping && hp.ground !== null)
+      hintLad = BK._ladderAt(L, hp.x, hp.y);
+  } catch (e) { hintLad = null; }
   L.ladders.forEach(function (lad) {
     var sp = BK._ladderSpan(L, lad);
+    if (hintLad && lad === hintLad.lad) {
+      ctx.save();
+      ctx.globalAlpha = 0.30 + 0.22 * Math.sin(Date.now() / 180);
+      ctx.fillStyle = '#aef6ff';
+      ctx.fillRect(lad.x - 6, sp.yTop, 12, sp.yBot - sp.yTop);
+      ctx.restore();
+    }
     drawLadder(lad.x, sp.yTop, sp.yBot);
     if (lad.broken) {
       ctx.fillStyle = '#0a0a12';
@@ -1758,6 +1782,15 @@ function drawPlay(s, st) {
   st.springs.forEach(drawSpring);
   // player
   drawPlayer(st.player);
+  // climb hint arrow: pulsing ▲ over the player while a ladder is grabbable
+  if (hintLad) {
+    ctx.save();
+    ctx.globalAlpha = 0.65 + 0.35 * Math.sin(Date.now() / 180);
+    ctx.fillStyle = '#aef6ff';
+    ctx.font = '8px monospace';
+    ctx.fillText('▲', Math.round(st.player.x) - 3, Math.round(st.player.y) - 24);
+    ctx.restore();
+  }
   // messages
   if (s.msgT > 0) txt(s.msg, BK.W / 2, 120, '#ffd23e', 10, 'center');
   if (st.clearT > 0) {
