@@ -65,7 +65,8 @@ function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
 var W = 224, H = 256;
 var GRAV = 1050;          // px/s^2
 var JUMP_V = 235;         // initial jump velocity -> apex ~26px
-var BIG_JUMP_V = 318;     // double-tap jump (2026-09-27, Black's request) -> apex ~48px
+var BIG_JUMP_V = 270;     // double-tap jump (2026-09-27, Black's request) -> apex ~35px
+                        // (was 318/~48px; Black: "that's too high")
 var WALK = 74;            // px/s
 var CLIMB = 58;           // px/s ladder
 var FALL_DEATH = 26;      // fall distance (px) that kills
@@ -1475,7 +1476,7 @@ var Input = (function () {
              touchUp: false, touchDown: false, bigJump: false };
   /* double-tap = bigger jump (2026-09-27, Black's request): two quick taps on
      the JUMP button — or two quick taps on the game canvas — launch a higher
-     jump (apex ~48px vs ~26px). The flag rides the next input snapshot and
+     jump (apex ~35px vs ~26px). The flag rides the next input snapshot and
      the logic consumes it on the jump's edge. */
   var lastJumpTapT = 0;
   function noteJumpTap() {
