@@ -7,15 +7,19 @@
 <title>STREET KINGS — CWI Arcade</title>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; -webkit-touch-callout:none; }
-  html, body { height:100%; background:#050508; overflow:hidden; touch-action:none; overscroll-behavior:none; }
+  html, body { height:100%; background:#050508; overflow:hidden; touch-action:none; overscroll-behavior:none;
+                 -webkit-text-size-adjust:100%; text-size-adjust:100%; }
   body { display:flex; align-items:center; justify-content:center; font-family:monospace; color:#fff; }
-  #wrap { display:flex; flex-direction:column; align-items:center; gap:8px; padding:8px; width:100%; max-width:860px; }
+  #wrap { display:flex; flex-direction:column; align-items:center; gap:8px; padding:8px; width:100%; max-width:860px;
+          touch-action:none; }
   #game { image-rendering:pixelated; image-rendering:crisp-edges; background:#0a0a12;
           border:3px solid #c9a227; border-radius:6px; box-shadow:0 0 24px rgba(201,162,39,.35);
           width:min(96vw, 150vh); height:auto; aspect-ratio:16/9; touch-action:none; }
-  #touch { display:flex; gap:10px; width:100%; max-width:640px; justify-content:space-between; align-items:center; }
-  #dpad { display:grid; grid-template-columns:repeat(3, 56px); grid-template-rows:repeat(3, 44px); gap:4px; }
-  #actions { display:flex; gap:10px; }
+  #touch { display:flex; gap:10px; width:100%; max-width:640px; justify-content:space-between; align-items:center;
+           touch-action:none; }
+  #dpad { display:grid; grid-template-columns:repeat(3, 56px); grid-template-rows:repeat(3, 44px); gap:4px;
+          touch-action:none; }
+  #actions { display:flex; gap:10px; touch-action:none; }
   .tbtn { user-select:none; -webkit-user-select:none; touch-action:none;
           background:#1a1a26; border:2px solid #17c3b2; color:#17c3b2; border-radius:12px;
           font-family:monospace; font-size:18px; font-weight:bold; text-align:center;
@@ -31,8 +35,9 @@
   #btn-jump:active { background:#7b3fd4; color:#0a0a12; }
   #btn-pause { position:fixed; top:10px; right:10px; z-index:50; width:44px; height:44px;
           background:#1a1a26; border:2px solid #ffd23f; color:#ffd23f; border-radius:10px;
-          font-size:18px; display:flex; align-items:center; justify-content:center; }
-  #hint { font-size:10px; color:#666; text-align:center; line-height:1.5; user-select:none; -webkit-user-select:none; }
+          font-size:18px; display:flex; align-items:center; justify-content:center; touch-action:none; }
+  #hint { font-size:10px; color:#666; text-align:center; line-height:1.5; user-select:none; -webkit-user-select:none;
+          touch-action:none; }
 </style>
 </head>
 <body>
@@ -645,7 +650,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = SK;
    IIFE. Depends on SK (logic.js) and optional SK_ART (injected by build.js).
    Presentation: the game fills the whole viewport (zero letterbox bars).
    An aspect-adaptive camera frames the full 216-unit world height so a
-   standing fighter is ~33% of the viewport height and follows the action
+   standing fighter is ~44% of the viewport height and follows the action
    horizontally; the scene is drawn edge to edge underneath and the arcade
    HUD sits directly on the art.
    Fighters are original pre-rendered chunky-pixel sprites (idle/walk/
@@ -668,10 +673,10 @@ var W = SK.W, H = SK.H;   // 384 x 216 world units (logic space, untouched)
    so the view rect maps exactly onto the canvas: letterbox is impossible
    by construction. Width follows the canvas aspect (clamped to the logic
    width 384). The camera follows the player horizontally; vertically the
-   whole stage is always visible. Fighter fraction = 72/216 = 33% of
-   viewport height (standing sprite is 72 world units tall). */
+   whole stage is always visible. Fighter fraction = 96/216 ~= 44% of
+   viewport height (hero-scale standing art is ~96 world units tall). */
 var CAM = { viewH: 216, viewW: 384, x: 0, y: 0, scale: 1,
-            cw: 384, ch: 216, fighterFrac: 72 / 216 };
+            cw: 384, ch: 216, fighterFrac: 96 / 216 };   // 96 = ART_NOMINAL_H (art block below)
 function fitCanvas() {
   var dpr = 1;
   try { dpr = Math.min(window.devicePixelRatio || 1, 2); } catch (e) {}
@@ -692,7 +697,7 @@ function fitCanvas() {
   CAM.viewH = H;
   CAM.viewW = Math.min(W, CAM.viewH * (bw / bh));
   CAM.scale = bh / CAM.viewH;
-  CAM.fighterFrac = 72 / CAM.viewH;
+  CAM.fighterFrac = 96 / CAM.viewH;   // 96 = ART_NOMINAL_H (hero-scale art block)
   updateCamera();
 }
 function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
@@ -823,6 +828,32 @@ if (typeof window.addEventListener !== 'undefined') {
 if (typeof document.addEventListener !== 'undefined') {
   document.addEventListener('selectstart', function (e) { e.preventDefault(); });
   document.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+}
+/* ---- iOS Safari zoom lock (DEFECT 1, 2026-09-28) ----
+   Apple ignores user-scalable=no / maximum-scale=1 in the viewport meta, so
+   the meta alone cannot stop the stuck-zoom Black hit on his iPhone: rapid
+   PUNCH/KICK taps double-tap-zoom the page and the viewport wedges large
+   (same class as the BARREL KING stuck-zoom). Belt and suspenders:
+   1. touch-action:none in CSS on every interactive surface (build.js),
+   2. kill the double-tap gesture: two touchends < 300ms apart get cancelled,
+   3. kill pinch-zoom + double-click zoom at the document level. */
+var __lastTouchEnd = 0;
+function guardDoubleTap(e) {
+  var now = Date.now();
+  if (now - __lastTouchEnd < 300) { if (e.cancelable) e.preventDefault(); }
+  __lastTouchEnd = now;
+}
+function killGestureZoom(e) { if (e.cancelable) e.preventDefault(); }
+if (typeof document.addEventListener !== 'undefined') {
+  try {
+    document.addEventListener('touchend', guardDoubleTap, { passive: false });
+  } catch (err) {
+    document.addEventListener('touchend', guardDoubleTap, false);
+  }
+  document.addEventListener('gesturestart', killGestureZoom, false);
+  document.addEventListener('gesturechange', killGestureZoom, false);
+  document.addEventListener('gestureend', killGestureZoom, false);
+  document.addEventListener('dblclick', killGestureZoom, false);
 }
 
 function bindHold(id, name) {
@@ -1010,23 +1041,32 @@ function makeSprite(w, h) {
 /* Fighter palettes — original designs, deep arcade 3-tone shading.
    line = silhouette outline, rim = upper-right rim light, sksh = skin shade. */
 var OUTC = '#07070d';   // universal silhouette outline
+/* Fighter palettes — original designs, deep arcade 4-tone shading.
+   line = silhouette outline, deep = core shadow, rim = upper-right light. */
+var OUTC = '#07070d';   // universal silhouette outline
 var PALS = {
-  player: { jacket: '#18968b', jshade: '#0b4a44', jrim: '#6ff2e2',
-            pants: '#22304a', pshade: '#101a2e', skin: '#dda06f', sksh: '#9c6538',
-            hair: '#101018', boot: '#33271a', bootsh: '#191106', glove: '#a32727' },
-  punk:   { jacket: '#c93232', jshade: '#7c1a1a', jrim: '#ff9a86',
-            pants: '#2e2e3a', pshade: '#16161e', skin: '#dda06f', sksh: '#9c6538',
-            hair: '#d83636', hairsh: '#8f1f1f', boot: '#141419', bootsh: '#07070b',
-            glove: '#e6d3ae' },
-  bruiser:{ jacket: '#7a3fd0', jshade: '#3f1880', jrim: '#c49aff',
-            pants: '#1d1d28', pshade: '#0d0d14', skin: '#bd8256', sksh: '#7e5028',
-            hair: '#2a1a3e', boot: '#2a1e12', bootsh: '#110b05', glove: '#40260e' },
-  boss:   { jacket: '#c39a24', jshade: '#6e5212', jrim: '#ffe9a3',
-            pants: '#2a2313', pshade: '#130f06', skin: '#dda06f', sksh: '#9c6538',
-            hair: '#b8b8c8', boot: '#181209', bootsh: '#070502', glove: '#8a6a1a' }
+  player: { jacket: '#18968b', jshade: '#0b4a44', jdeep: '#062a26', jrim: '#6ff2e2',
+            pants: '#22304a', pshade: '#101a2e', pdeep: '#070d18', skin: '#dda06f',
+            sksh: '#9c6538', skdeep: '#6e4423', hair: '#101018', boot: '#33271a',
+            bootsh: '#191106', glove: '#a32727' },
+  punk:   { jacket: '#c93232', jshade: '#7c1a1a', jdeep: '#4a0e0e', jrim: '#ff9a86',
+            pants: '#2e2e3a', pshade: '#16161e', pdeep: '#0a0a10', skin: '#dda06f',
+            sksh: '#9c6538', skdeep: '#6e4423', hair: '#d83636', hairsh: '#8f1f1f',
+            boot: '#141419', bootsh: '#07070b', glove: '#e6d3ae' },
+  bruiser:{ jacket: '#7a3fd0', jshade: '#3f1880', jdeep: '#230b4a', jrim: '#c49aff',
+            pants: '#1d1d28', pshade: '#0d0d14', pdeep: '#06060c', skin: '#bd8256',
+            sksh: '#7e5028', skdeep: '#54340f', hair: '#2a1a3e', boot: '#2a1e12',
+            bootsh: '#110b05', glove: '#40260e' },
+  boss:   { jacket: '#c39a24', jshade: '#6e5212', jdeep: '#3d2c08', jrim: '#ffe9a3',
+            pants: '#2a2313', pshade: '#130f06', pdeep: '#0a0803', skin: '#dda06f',
+            sksh: '#9c6538', skdeep: '#6e4423', hair: '#b8b8c8', boot: '#181209',
+            bootsh: '#070502', glove: '#8a6a1a' }
 };
-var FSCALE = { player: 1.0, punk: 0.96, bruiser: 1.16, boss: 1.44 };
-var TORSO_W = { player: 17, punk: 15, bruiser: 21, boss: 26 };
+/* hero-scale skeletons: ~5.5 heads tall, long legs, narrow waist, wide chest.
+   Rey ~101u (47% of the 216 frame); Big Chrome towers at ~1.32x. */
+var FSCALE = { player: 1.0, punk: 0.97, bruiser: 1.14, boss: 1.32 };
+var TORSO_W = { player: 22, punk: 20, bruiser: 27, boss: 32 };
+var ART_NOMINAL_H = 96;   // standing art height used for the camera fighter fraction
 
 function R(c, x, y, w, h, col) { c.fillStyle = col; c.fillRect(x, y, w, h); }
 /* limb segment: rect of width w from (x,y) at deg (0=+x, 90=down), returns end point */
@@ -1051,29 +1091,33 @@ function segO(c, x, y, deg, len, w, col) {
   seg(c, x, y, deg, len, w + 4, OUTC);
   seg(c, x, y, deg, len, w, col);
 }
-/* muscular limb: outline + base + back shade + upper-right rim light.
-   returns end point. shade/rim drawn as offset sub-segments. */
-function limb(c, x, y, deg, len, w, base, shade, rim) {
+/* heroic limb: outline + base + back shade + deep core line + upper-right rim.
+   returns end point. */
+function limb(c, x, y, deg, len, w, base, shade, deep, rim) {
   var r = deg * Math.PI / 180, px = -Math.sin(r), py = Math.cos(r);
   seg(c, x, y, deg, len, w + 4, OUTC);
   seg(c, x, y, deg, len, w, base);
-  seg(c, x + px * w * 0.20, y + py * w * 0.20, deg, len, w * 0.52, shade);
-  seg(c, x - px * w * 0.30, y - py * w * 0.30, deg, len * 0.94, w * 0.20, rim);
+  seg(c, x + px * w * 0.22, y + py * w * 0.22, deg, len, w * 0.50, shade);
+  seg(c, x + px * w * 0.40, y + py * w * 0.40, deg, len * 0.92, w * 0.18, deep);
+  seg(c, x - px * w * 0.32, y - py * w * 0.32, deg, len * 0.94, w * 0.20, rim);
   return [x + Math.cos(r) * len, y + Math.sin(r) * len];
 }
-/* heavy brawler fist with knuckle ridges */
+/* heavy brawler fist with knuckle ridges + cuff */
 function fist(c, x, y, s, pal) {
-  rectO(c, x - 4 * s, y - 4 * s, 8 * s, 8 * s, pal.glove);
-  R(c, x - 4 * s, y - 4 * s, 8 * s, 2.4 * s, 'rgba(255,255,255,0.28)');
-  R(c, x - 4 * s, y + 1.6 * s, 8 * s, 2.4 * s, 'rgba(0,0,0,0.32)');
-  R(c, x - 1 * s, y - 4 * s, 2 * s, 8 * s, 'rgba(0,0,0,0.22)');
+  rectO(c, x - 4.5 * s, y - 4.5 * s, 9 * s, 9 * s, pal.glove);
+  R(c, x - 4.5 * s, y - 4.5 * s, 9 * s, 2.6 * s, 'rgba(255,255,255,0.28)');
+  R(c, x - 4.5 * s, y + 1.9 * s, 9 * s, 2.6 * s, 'rgba(0,0,0,0.32)');
+  R(c, x - 1.2 * s, y - 4.5 * s, 2.4 * s, 9 * s, 'rgba(0,0,0,0.22)');
+  R(c, x - 4.5 * s, y - 7 * s, 9 * s, 2.6 * s, pal.bootsh);   // cuff
 }
-/* heavy boot with sole + toe highlight */
+/* heavy boot with sole, toe cap + laces */
 function boot(c, x, y, s, pal) {
-  rectO(c, x - 1 * s, y - 2.5 * s, 11 * s, 6.5 * s, pal.boot);
-  R(c, x - 1 * s, y + 2 * s, 11 * s, 2 * s, pal.bootsh);
-  R(c, x - 1 * s, y - 2.5 * s, 11 * s, 2 * s, 'rgba(255,255,255,0.16)');
-  R(c, x + 7 * s, y - 2.5 * s, 3 * s, 4.5 * s, 'rgba(255,255,255,0.10)');
+  rectO(c, x - 1.5 * s, y - 3 * s, 13 * s, 7.5 * s, pal.boot);
+  R(c, x - 1.5 * s, y + 2.4 * s, 13 * s, 2.1 * s, pal.bootsh);
+  R(c, x - 1.5 * s, y - 3 * s, 13 * s, 2.2 * s, 'rgba(255,255,255,0.16)');
+  R(c, x + 8 * s, y - 3 * s, 3.5 * s, 5.4 * s, 'rgba(255,255,255,0.10)');
+  R(c, x + 2 * s, y - 1 * s, 5 * s, 1.4 * s, 'rgba(0,0,0,0.4)');   // laces
+  R(c, x + 2 * s, y + 1.2 * s, 5 * s, 1.4 * s, 'rgba(0,0,0,0.4)');
 }
 
 /* pose params: hip dy, torso lean deg, head dx/dy, armF/armB [shoulder,elbow],
@@ -1081,16 +1125,24 @@ function boot(c, x, y, s, pal) {
    Standing-pose legs point DOWN (80-115) so the fighter's full height
    fills the sprite box; kicks/jumps/takedowns keep extended/tucked legs. */
 function poseParams(pose, type) {
+  /* neutral = fighting guard, never arms-at-sides: fists up at chest height,
+     knees bent, weight forward — the reference grammar puts attitude in the
+     stance. Angles: 0=+x(forward), 90=down, -90=up. */
   var P = {
-    hip: 0, lean: 4, head: [1, 0],
-    aF: [-30, 75], aB: [25, 85], lF: [82, 92], lB: [98, 88]
+    hip: 2, lean: 10, head: [2, 0],
+    aF: [15, -55], aB: [30, -40], lF: [70, 105], lB: [110, 75]
   };
   switch (pose) {
-    case 'idle1': P.hip = -1; P.aF = [-24, 70]; P.lF = [84, 94]; P.lB = [96, 86]; break;
-    case 'walk0': P.hip = -1; P.lF = [108, 102]; P.lB = [72, 80]; P.aF = [20, 60]; P.aB = [-18, 70]; break;
-    case 'walk1': P.hip = -1; P.lF = [92, 112]; P.lB = [84, 88]; P.aF = [26, 55]; P.aB = [-24, 65]; break;
-    case 'walk2': P.hip = -1; P.lF = [72, 80]; P.lB = [108, 102]; P.aF = [-18, 70]; P.aB = [20, 60]; break;
-    case 'walk3': P.hip = -1; P.lF = [84, 88]; P.lB = [92, 112]; P.aF = [-24, 65]; P.aB = [26, 55]; break;
+    case 'idle1': P.hip = 2; P.lean = 12; P.aF = [20, -50]; P.aB = [26, -44];
+      P.lF = [72, 103]; P.lB = [108, 77]; break;
+    case 'walk0': P.hip = 2; P.lF = [108, 102]; P.lB = [72, 80];
+      P.aF = [18, -52]; P.aB = [28, -42]; break;
+    case 'walk1': P.hip = 2; P.lF = [92, 112]; P.lB = [84, 88];
+      P.aF = [18, -52]; P.aB = [28, -42]; break;
+    case 'walk2': P.hip = 2; P.lF = [72, 80]; P.lB = [108, 102];
+      P.aF = [18, -52]; P.aB = [28, -42]; break;
+    case 'walk3': P.hip = 2; P.lF = [84, 88]; P.lB = [92, 112];
+      P.aF = [18, -52]; P.aB = [28, -42]; break;
     case 'punch_windup': P.lean = 6; P.aF = [45, 100]; P.aB = [20, 90]; P.lF = [82, 92]; P.lB = [98, 88]; break;
     case 'punch_jab': P.lean = 12; P.head = [3, 0]; P.aF = [2, 8]; P.aB = [30, 95]; P.lF = [86, 94]; P.lB = [96, 86]; break;
     case 'punch_cross': P.lean = 16; P.head = [4, 0]; P.aB = [-2, 8]; P.aF = [50, 100]; P.lF = [88, 96]; P.lB = [94, 84]; break;
@@ -1113,175 +1165,202 @@ function poseParams(pose, type) {
   return P;
 }
 
+/* headgear + face for the hero-scale head (hx,hy top-left, hw=18s, hh=19s).
+   flat=1: compact headgear for the 24x24 HUD portraits. */
 function drawHeadgear(c, type, hx, hy, hw, hh, pal, s, flat) {
-  // flat=1: compact headgear for the 24x24 HUD portraits (no tall hair)
-  var hairH = flat ? 4 : 7, mohH = flat ? 7 : 13;
+  var hairH = flat ? 4 : 8, mohH = flat ? 8 : 16;
   if (type === 'player') {           // black hair mass + teal headband, knot tails
     R(c, hx - 2, hy - (hairH - 1) * s, hw + 3, hairH * s, pal.hair);
-    R(c, hx - 2, hy - (hairH - 1) * s, 6 * s, (hairH + 6) * s, pal.hair);
+    R(c, hx - 2, hy - (hairH - 1) * s, 7 * s, (hairH + 7) * s, pal.hair);
     R(c, hx - 2, hy - (hairH - 1) * s, hw + 3, 2 * s, 'rgba(255,255,255,0.14)');
-    rectO(c, hx - 1, hy + 2, hw + 2, 4 * s, '#17c3b2');
-    R(c, hx - 1, hy + 2, hw + 2, 1.6 * s, '#7df2e6');
-    R(c, hx - 7 * s, hy + 4, 6 * s, 2.6 * s, '#0d7a70');
-    R(c, hx - 9 * s, hy + 6, 3.4 * s, 6 * s, '#0d7a70');
+    rectO(c, hx - 1, hy + 3, hw + 2, 4.6 * s, '#17c3b2');
+    R(c, hx - 1, hy + 3, hw + 2, 1.8 * s, '#7df2e6');
+    R(c, hx - 8 * s, hy + 5, 7 * s, 3 * s, '#0d7a70');
+    R(c, hx - 10.5 * s, hy + 7, 4 * s, 7 * s, '#0d7a70');
   } else if (type === 'punk') {      // tall red mohawk fin, dark roots, shine
-    rectO(c, hx + hw / 2 - 2.6 * s, hy - mohH * s, 5.6 * s, (mohH + 1) * s, pal.hair);
-    R(c, hx + hw / 2 - 2.6 * s, hy - mohH * s, 2 * s, (mohH + 1) * s, pal.hairsh);
-    R(c, hx + hw / 2 + 2 * s, hy - mohH * s, 1 * s, (mohH + 1) * s, 'rgba(255,255,255,0.28)');
-    R(c, hx + hw / 2 - 2.6 * s, hy - 3 * s, 5.6 * s, 4 * s, pal.hairsh);
+    rectO(c, hx + hw / 2 - 3 * s, hy - mohH * s, 6.4 * s, (mohH + 1) * s, pal.hair);
+    R(c, hx + hw / 2 - 3 * s, hy - mohH * s, 2.2 * s, (mohH + 1) * s, pal.hairsh);
+    R(c, hx + hw / 2 + 2.4 * s, hy - mohH * s, 1.2 * s, (mohH + 1) * s, 'rgba(255,255,255,0.28)');
+    R(c, hx + hw / 2 - 3 * s, hy - 3.4 * s, 6.4 * s, 4.4 * s, pal.hairsh);
   } else if (type === 'bruiser') {   // dark hair + purple bandana, knot + tails
-    R(c, hx - 1, hy - 4 * s, hw + 2, 5 * s, pal.hair);
-    rectO(c, hx - 1, hy + 1, hw + 2, 4.4 * s, '#7b3fd4');
-    R(c, hx - 1, hy + 1, hw + 2, 1.6 * s, '#c49aff');
-    R(c, hx + hw - 2, hy + 4, 5.4 * s, 3.4 * s, '#47208c');
-    R(c, hx + hw + 2.4, hy + 5, 3.2 * s, 7 * s, '#47208c');
+    R(c, hx - 1, hy - 4.6 * s, hw + 2, 5.6 * s, pal.hair);
+    rectO(c, hx - 1, hy + 2, hw + 2, 5 * s, '#7b3fd4');
+    R(c, hx - 1, hy + 2, hw + 2, 1.8 * s, '#c49aff');
+    R(c, hx + hw - 2, hy + 5, 6.2 * s, 3.8 * s, '#47208c');
+    R(c, hx + hw + 3, hy + 6, 3.6 * s, 8 * s, '#47208c');
   } else {                            // boss: chrome dome shine + heavy brow + earring
-    R(c, hx, hy - 1.5 * s, hw, 5 * s, '#c8c8d8');
-    R(c, hx + 2.4 * s, hy - 1.5 * s, hw - 5 * s, 2.2 * s, '#f4f4f4');
-    R(c, hx, hy + 3.5 * s, hw, 2 * s, 'rgba(0,0,0,0.22)');
-    R(c, hx + hw - 11 * s, hy + 3.4 * s, 11 * s, 3.2 * s, 'rgba(40,30,10,0.6)');
-    R(c, hx + 2.6 * s, hy + 9 * s, 2.2 * s, 3.4 * s, '#c9a227');
-    R(c, hx + 2.6 * s, hy + 9 * s, 2.2 * s, 1.2 * s, '#ffe9a3');
+    R(c, hx, hy - 1.6 * s, hw, 5.6 * s, '#c8c8d8');
+    R(c, hx + 2.8 * s, hy - 1.6 * s, hw - 5.6 * s, 2.4 * s, '#f4f4f4');
+    R(c, hx, hy + 4 * s, hw, 2.2 * s, 'rgba(0,0,0,0.22)');
+    R(c, hx + hw - 13 * s, hy + 3.8 * s, 13 * s, 3.6 * s, 'rgba(40,30,10,0.6)');
+    R(c, hx + 3 * s, hy + 10.6 * s, 2.6 * s, 4 * s, '#c9a227');
+    R(c, hx + 3 * s, hy + 10.6 * s, 2.6 * s, 1.4 * s, '#ffe9a3');
   }
-  // brow shadow, eyes (face +x), pupils, glints, nose, mouth, ear
-  R(c, hx + hw - 10 * s, hy + 4.6 * s, 10 * s, 2.6 * s, 'rgba(60,20,10,0.5)');
-  R(c, hx + hw - 8.6 * s, hy + 7 * s, 3.2 * s, 3.2 * s, '#f4f0e8');
-  R(c, hx + hw - 5 * s, hy + 7 * s, 2.8 * s, 3.2 * s, '#f4f0e8');
-  R(c, hx + hw - 7.6 * s, hy + 8 * s, 1.6 * s, 2.2 * s, '#101018');
-  R(c, hx + hw - 4.6 * s, hy + 8 * s, 1.6 * s, 2.2 * s, '#101018');
-  R(c, hx + hw - 7.6 * s, hy + 8 * s, 1 * s, 1 * s, '#ffffff');
-  R(c, hx + hw - 3.2 * s, hy + 9.6 * s, 2.2 * s, 2.2 * s, pal.sksh);
-  R(c, hx + hw - 8.6 * s, hy + 12.6 * s, 5.4 * s, 1.6 * s, '#6e3a26');
-  R(c, hx + 1.6 * s, hy + 7.4 * s, 2.6 * s, 4.2 * s, pal.sksh);
+  /* ---- face: heavy brow, big arcade eyes, nose, grim mouth, jaw ---- */
+  var fx = hx, fy = hy;
+  R(c, fx, fy + 5.4 * s, hw, 3 * s, 'rgba(60,20,10,0.45)');                 // brow shadow
+  R(c, fx + 2.6 * s, fy + 4.2 * s, 5.4 * s, 2.2 * s, '#101018');            // brows
+  R(c, fx + 10.4 * s, fy + 3.8 * s, 5.4 * s, 2.2 * s, '#101018');
+  R(c, fx + 3 * s, fy + 8.4 * s, 4.6 * s, 4.6 * s, '#f4f0e8');              // eyes
+  R(c, fx + 10.8 * s, fy + 8.4 * s, 4.6 * s, 4.6 * s, '#f4f0e8');
+  R(c, fx + 4.6 * s, fy + 9.4 * s, 2.2 * s, 3 * s, '#101018');              // pupils
+  R(c, fx + 12.4 * s, fy + 9.4 * s, 2.2 * s, 3 * s, '#101018');
+  R(c, fx + 4.6 * s, fy + 9.4 * s, 1 * s, 1 * s, '#ffffff');                // glints
+  R(c, fx + 12.4 * s, fy + 9.4 * s, 1 * s, 1 * s, '#ffffff');
+  R(c, fx + 8.2 * s, fy + 12.4 * s, 2.4 * s, 2.6 * s, pal.sksh);           // nose
+  R(c, fx + 5.4 * s, fy + 15.6 * s, 7.6 * s, 2 * s, '#5e2f1e');            // mouth
+  R(c, fx + 1.8 * s, fy + 8.8 * s, 3 * s, 5 * s, pal.sksh);                 // ear
+  R(c, fx, fy + hh - 4.4 * s, hw, 4.4 * s, pal.sksh);                      // jaw shade
+  R(c, fx, fy + hh - 2 * s, hw, 2 * s, pal.skdeep);
 }
 
+/* hero-scale fighter painter. Feet stay grounded at (feet); the box bottom
+   anchors to the entity ground plane in drawFighter. All original designs. */
 function drawFighterArt(c, type, pose, cw, ch) {
   var pal = PALS[type], s = FSCALE[type];
   var cx = cw / 2, feet = ch - 3 * s;
   var P = poseParams(pose, type);
-  var torsoW = TORSO_W[type] * s, armW = 9.5 * s, legW = 10.5 * s;
+  var torsoW = TORSO_W[type] * s, armW = 12 * s, legW = 13 * s;   // heavy builds
 
-  if (pose === 'down') { // knocked flat — sprawled heavy body (compact: ds scale)
-    var ds = s * 0.9, gy = feet - 5 * s;
-    rectO(c, cx - 22 * ds, gy - 5 * ds, 32 * ds, 11 * ds, pal.pants);  // legs
-    R(c, cx - 22 * ds, gy - 5 * ds, 32 * ds, 3 * ds, 'rgba(255,255,255,0.12)');
-    R(c, cx - 22 * ds, gy + 2 * ds, 32 * ds, 4 * ds, 'rgba(0,0,0,0.3)');
-    rectO(c, cx - 24 * ds, gy - 5 * ds, 8 * ds, 11 * ds, pal.boot);
-    rectO(c, cx + 10 * ds, gy - 8 * ds, 18 * ds, 15 * ds, pal.jacket); // torso
-    R(c, cx + 10 * ds, gy - 8 * ds, 18 * ds, 4 * ds, pal.jshade);
-    R(c, cx + 10 * ds, gy + 3 * ds, 18 * ds, 4 * ds, 'rgba(0,0,0,0.28)');
-    R(c, cx + 24 * ds, gy - 8 * ds, 4 * ds, 15 * ds, pal.jrim);
-    var dhx = cx + 24 * ds, dhy = gy - 10 * ds;                       // head
-    rectO(c, dhx, dhy, 13 * ds, 12 * ds, pal.skin);
-    R(c, dhx, dhy + 8 * ds, 13 * ds, 4 * ds, pal.sksh);
-    drawHeadgear(c, type, dhx, dhy, 13 * ds, 12 * ds, pal, ds);
-    segO(c, cx + 12 * ds, gy, 150, 12 * ds, armW * 0.9, pal.jacket);   // sprawled arm
-    seg(c, cx + 12 * ds, gy - 1 * ds, 150, 12 * ds, armW * 0.45, pal.jshade);
-    fist(c, cx + 1 * ds, gy + 6 * ds, ds, pal);
+  if (pose === 'down') { // knocked flat — sprawled heavy body
+    var ds = s, gy = feet - 6 * s;
+    rectO(c, cx - 26 * ds, gy - 6 * ds, 38 * ds, 13 * ds, pal.pants);  // legs
+    R(c, cx - 26 * ds, gy - 6 * ds, 38 * ds, 3.4 * ds, 'rgba(255,255,255,0.12)');
+    R(c, cx - 26 * ds, gy + 2.6 * ds, 38 * ds, 4.4 * ds, 'rgba(0,0,0,0.3)');
+    rectO(c, cx - 29 * ds, gy - 6 * ds, 9 * ds, 13 * ds, pal.boot);
+    rectO(c, cx + 12 * ds, gy - 10 * ds, 22 * ds, 18 * ds, pal.jacket); // torso
+    R(c, cx + 12 * ds, gy - 10 * ds, 22 * ds, 4.6 * ds, pal.jshade);
+    R(c, cx + 12 * ds, gy + 4 * ds, 22 * ds, 4 * ds, 'rgba(0,0,0,0.28)');
+    R(c, cx + 29 * ds, gy - 10 * ds, 5 * ds, 18 * ds, pal.jrim);
+    var dhx = cx + 30 * ds, dhy = gy - 13 * ds;                        // head
+    rectO(c, dhx, dhy, 15 * ds, 15 * ds, pal.skin);
+    R(c, dhx, dhy + 10 * ds, 15 * ds, 5 * ds, pal.sksh);
+    drawHeadgear(c, type, dhx, dhy, 15 * ds, 15 * ds, pal, ds);
+    segO(c, cx + 14 * ds, gy, 150, 14 * ds, armW, pal.jacket);          // sprawled arm
+    seg(c, cx + 14 * ds, gy - 1 * ds, 150, 14 * ds, armW * 0.45, pal.jshade);
+    fist(c, cx + 1 * ds, gy + 7 * ds, ds, pal);
     return;
   }
 
-  var hipX = cx, hipY = feet - 29 * s + P.hip * s;
+  var hipX = cx, hipY = feet - 46 * s + P.hip * s;
   var lean = P.lean * Math.PI / 180;
-  var shX = hipX + Math.sin(lean) * 23 * s, shY = hipY - Math.cos(lean) * 23 * s;
+  var shX = hipX + Math.sin(lean) * 32 * s, shY = hipY - Math.cos(lean) * 32 * s;
   var tAng = -90 + P.lean;
   var pr = tAng * Math.PI / 180, ppx = -Math.sin(pr), ppy = Math.cos(pr);
 
-  // ---- back arm (behind torso): darker, minimal rim ----
-  var shB = [shX - 4 * s, shY + 1 * s];
-  var elB = limb(c, shB[0], shB[1], P.aB[0], 12 * s, armW, pal.jshade, '#000000', '#3a3a44');
-  var wrB = limb(c, elB[0], elB[1], P.aB[1], 10 * s, armW * 0.9, pal.sksh, '#000000', '#5a5a66');
+  // ---- back arm (behind torso): darker ----
+  var shB = [shX - 5 * s, shY + 2 * s];
+  var elB = limb(c, shB[0], shB[1], P.aB[0], 15 * s, armW, pal.jshade, pal.jdeep, '#000000', '#3a3a44');
+  var wrB = limb(c, elB[0], elB[1], P.aB[1], 13 * s, armW * 0.9, pal.sksh, pal.skdeep, '#000000', '#5a5a66');
   fist(c, wrB[0], wrB[1], s * 0.9, pal);
 
   // ---- back leg ----
-  var hipB = [hipX - 3 * s, hipY];
-  var knB = limb(c, hipB[0], hipB[1], P.lB[0], 15 * s, legW, pal.pshade, '#000000', '#2c2c3a');
-  var anB = limb(c, knB[0], knB[1], P.lB[1], 13 * s, legW * 0.85, pal.pshade, '#000000', '#2c2c3a');
+  var hipB = [hipX - 4 * s, hipY];
+  var knB = limb(c, hipB[0], hipB[1], P.lB[0], 19 * s, legW, pal.pshade, pal.pdeep, '#000000', '#2c2c3a');
+  var anB = limb(c, knB[0], knB[1], P.lB[1], 17 * s, legW * 0.85, pal.pshade, pal.pdeep, '#000000', '#2c2c3a');
   boot(c, anB[0], anB[1], s * 0.95, pal);
 
-  // ---- torso: shade back half, jacket front, rim light, hem shadow ----
-  seg(c, hipX - ppx * 3 * s, hipY - ppy * 3 * s, tAng, 24 * s, torsoW * 0.62 + 4, OUTC);
-  seg(c, hipX - ppx * 3 * s, hipY - ppy * 3 * s, tAng, 24 * s, torsoW * 0.62, pal.jshade);
-  seg(c, hipX + ppx * 2 * s, hipY + ppy * 2 * s, tAng, 24 * s, torsoW * 0.68 + 4, OUTC);
-  seg(c, hipX + ppx * 2 * s, hipY + ppy * 2 * s, tAng, 24 * s, torsoW * 0.68, pal.jacket);
-  seg(c, hipX - ppx * 1 * s, hipY - ppy * 1 * s, tAng, 5 * s, torsoW * 0.7, 'rgba(0,0,0,0.30)'); // hem shadow
-  seg(c, hipX + ppx * (torsoW * 0.30), hipY + ppy * (torsoW * 0.30),
-      tAng, 21 * s, 2.4 * s, pal.jrim);                          // rim light, upper-right edge
-  seg(c, shX - 1 * s, shY, tAng, 4 * s, torsoW * 0.5, 'rgba(255,255,255,0.18)'); // collar light
+  // ---- torso: tapered hero build — narrow waist, wide chest ----
+  var tLen = 33 * s;
+  seg(c, hipX, hipY, tAng, tLen, torsoW + 4, OUTC);                        // outline
+  seg(c, hipX, hipY, tAng, tLen, torsoW, pal.jacket);                      // base
+  seg(c, hipX + ppx * torsoW * 0.22, hipY + ppy * torsoW * 0.22,
+      tAng, tLen, torsoW * 0.46, pal.jshade);                              // back shade
+  seg(c, hipX + ppx * torsoW * 0.40, hipY + ppy * torsoW * 0.40,
+      tAng, tLen * 0.9, torsoW * 0.18, pal.jdeep);                         // core shadow
+  seg(c, hipX, hipY, tAng, 12 * s, torsoW * 0.80, pal.jshade);             // waist taper
+  seg(c, hipX - ppx * torsoW * 0.30, hipY - ppy * torsoW * 0.30,
+      tAng, tLen * 0.66, torsoW * 0.16, 'rgba(255,255,255,0.10)');          // chest light
+  seg(c, hipX - ppx * (torsoW * 0.48), hipY - ppy * (torsoW * 0.48),
+      tAng, tLen * 0.92, 2.6 * s, pal.jrim);                              // rim, front edge
 
   // ---- jacket / vest / armor details per archetype ----
-  if (type === 'player') { // teal jacket: collar lapels, zipper, cuffs
-    seg(c, shX - ppx * 4 * s, shY - ppy * 4 * s, tAng + 24, 9 * s, 4 * s, pal.jshade);
-    seg(c, shX + ppx * 4 * s, shY + ppy * 4 * s, tAng - 24, 9 * s, 4 * s, pal.jshade);
-    seg(c, shX + 1 * s, shY + 2 * s, tAng, 20 * s, 2 * s, '#e8f6f4');
-    R(c, shX - 6 * s, shY - 1 * s, 12 * s, 3 * s, pal.jshade);
+  if (type === 'player') { // teal jacket: collar lapels, zipper, fold lines
+    seg(c, shX - ppx * 5 * s, shY - ppy * 5 * s, tAng + 24, 11 * s, 4.6 * s, pal.jshade);
+    seg(c, shX + ppx * 5 * s, shY + ppy * 5 * s, tAng - 24, 11 * s, 4.6 * s, pal.jshade);
+    seg(c, shX + 1 * s, shY + 3 * s, tAng, 26 * s, 2.2 * s, '#e8f6f4');
+    seg(c, shX - ppx * 8 * s, shY - ppy * 8 * s, tAng, 24 * s, 2 * s, pal.jdeep);
+    seg(c, shX + ppx * 10 * s, shY + ppy * 10 * s, tAng, 24 * s, 2 * s, pal.jdeep);
+    var tR2 = tAng * Math.PI / 180;                                    // pec definition
+    var pcx = shX - Math.cos(tR2) * 12 * s, pcy = shY - Math.sin(tR2) * 12 * s;
+    R(c, pcx - 8 * s, pcy - 1 * s, 7 * s, 2.2 * s, pal.jdeep);
+    R(c, pcx + 1 * s, pcy - 1 * s, 7 * s, 2.2 * s, pal.jdeep);
   } else if (type === 'punk') { // open red vest: bare chest, side panels, fringe, studs
-    seg(c, hipX + ppx * 1 * s, hipY + ppy * 1 * s, tAng, 24 * s, torsoW * 0.40, pal.skin);
-    seg(c, hipX + ppx * 1 * s, hipY + ppy * 1 * s, tAng, 24 * s, torsoW * 0.16, pal.sksh);
-    seg(c, hipX - ppx * 5 * s, hipY - ppy * 5 * s, tAng, 24 * s, torsoW * 0.30, pal.jacket);
-    seg(c, hipX + ppx * 6 * s, hipY + ppy * 6 * s, tAng, 24 * s, torsoW * 0.16, pal.jacket);
-    for (var fi = 0; fi < 5; fi++)                                    // fringe
-      R(c, hipX - torsoW * 0.34 + fi * torsoW * 0.17, hipY - 1 * s, 2 * s, 5 * s, pal.jshade);
-    for (var si = 0; si < 3; si++) {                                  // studs
-      R(c, hipX - ppx * 5 * s - 1 * s, hipY - ppy * 5 * s + 4 * s + si * 6 * s, 2 * s, 2 * s, '#ffd8d0');
-      R(c, hipX + ppx * 6 * s - 1 * s, hipY + ppy * 6 * s + 4 * s + si * 6 * s, 2 * s, 2 * s, '#ffd8d0');
+    seg(c, hipX + ppx * 1 * s, hipY + ppy * 1 * s, tAng, 33 * s, torsoW * 0.44, pal.skin);
+    seg(c, hipX + ppx * 1 * s, hipY + ppy * 1 * s, tAng, 33 * s, torsoW * 0.18, pal.sksh);
+    R(c, hipX - 3 * s, hipY - 16 * s, 7 * s, 2 * s, pal.skdeep);            // pec lines
+    R(c, hipX + 3 * s, hipY - 16 * s, 7 * s, 2 * s, pal.skdeep);
+    R(c, hipX - 4 * s, hipY - 8 * s, 9 * s, 1.8 * s, pal.sksh);            // ab lines
+    R(c, hipX - 4 * s, hipY - 3 * s, 9 * s, 1.8 * s, pal.sksh);
+    seg(c, hipX - ppx * 6 * s, hipY - ppy * 6 * s, tAng, 33 * s, torsoW * 0.30, pal.jacket);
+    seg(c, hipX + ppx * 7 * s, hipY + ppy * 7 * s, tAng, 33 * s, torsoW * 0.18, pal.jacket);
+    for (var fi = 0; fi < 6; fi++)                                        // fringe
+      R(c, hipX - torsoW * 0.38 + fi * torsoW * 0.15, hipY - 1 * s, 2.2 * s, 6 * s, pal.jshade);
+    for (var si = 0; si < 4; si++) {                                      // studs
+      R(c, hipX - ppx * 6 * s - 1.2 * s, hipY - ppy * 6 * s + 5 * s + si * 7 * s, 2.4 * s, 2.4 * s, '#ffd8d0');
+      R(c, hipX + ppx * 7 * s - 1.2 * s, hipY + ppy * 7 * s + 5 * s + si * 7 * s, 2.4 * s, 2.4 * s, '#ffd8d0');
     }
   } else { // bruiser + boss: heavy shoulder pads with rivets
-    var pw = (type === 'boss' ? 19 : 13) * s;
-    rectO(c, shX - pw / 2, shY - 7 * s, pw, 8 * s, pal.jshade);
-    R(c, shX - pw / 2, shY - 7 * s, pw, 3 * s, pal.jacket);
-    R(c, shX - pw / 2, shY - 7 * s, pw, 1.6 * s, 'rgba(255,255,255,0.25)');
+    var pw = (type === 'boss' ? 24 : 17) * s;
+    rectO(c, shX - pw / 2, shY - 8.5 * s, pw, 9.5 * s, pal.jshade);
+    R(c, shX - pw / 2, shY - 8.5 * s, pw, 3.4 * s, pal.jacket);
+    R(c, shX - pw / 2, shY - 8.5 * s, pw, 1.8 * s, 'rgba(255,255,255,0.25)');
     for (var ri = 0; ri < 3; ri++)
-      R(c, shX - pw / 2 + 2.5 * s + ri * (pw - 5 * s) / 2, shY - 4.4 * s, 2 * s, 2 * s, pal.jrim);
+      R(c, shX - pw / 2 + 3 * s + ri * (pw - 6 * s) / 2, shY - 5.2 * s, 2.4 * s, 2.4 * s, pal.jrim);
   }
   if (type === 'boss') { // black lapels + gold crown chest emblem (original motif)
-    seg(c, shX - ppx * 3 * s, shY - ppy * 3 * s, tAng + 20, 12 * s, 4.5 * s, '#101018');
-    seg(c, shX + ppx * 3 * s, shY + ppy * 3 * s, tAng - 20, 12 * s, 4.5 * s, '#101018');
-    drawCrown(c, shX - 2.5 * s, shY + 7 * s, 10 * s, 8 * s, '#ffe9a3', '#d83636');
+    seg(c, shX - ppx * 3.5 * s, shY - ppy * 3.5 * s, tAng + 20, 14 * s, 5 * s, '#101018');
+    seg(c, shX + ppx * 3.5 * s, shY + ppy * 3.5 * s, tAng - 20, 14 * s, 5 * s, '#101018');
+    drawCrown(c, shX - 3 * s, shY + 8 * s, 12 * s, 9 * s, '#ffe9a3', '#d83636');
   }
 
   // ---- neck + belt + buckle ----
-  rectO(c, shX - 3 * s, shY - 1 * s, 6 * s, 6 * s, pal.sksh);
-  rectO(c, hipX - torsoW / 2 - 1 * s, hipY - 2.5 * s, torsoW + 2 * s, 5 * s, '#101018');
-  var bkw = (type === 'boss' || type === 'bruiser') ? 7 * s : 5 * s;
-  rectO(c, hipX - bkw / 2 + 1 * s, hipY - 2.5 * s, bkw, 5 * s, '#c9a227');
-  R(c, hipX - bkw / 2 + 1 * s, hipY - 2.5 * s, bkw, 1.6 * s, '#ffe9a3');
+  rectO(c, shX - 3 * s, shY - 2 * s, 6 * s, 8 * s, pal.sksh);
+  rectO(c, hipX - torsoW * 0.42, hipY - 3 * s, torsoW * 0.84, 6 * s, '#101018');
+  var bkw = (type === 'boss' || type === 'bruiser') ? 8 * s : 6 * s;
+  rectO(c, hipX - bkw / 2 + 1 * s, hipY - 3 * s, bkw, 6 * s, '#c9a227');
+  R(c, hipX - bkw / 2 + 1 * s, hipY - 3 * s, bkw, 1.8 * s, '#ffe9a3');
 
-  // ---- front leg: thigh bulge, shin, heavy boot ----
-  var hipF = [hipX + 3 * s, hipY];
-  var knF = limb(c, hipF[0], hipF[1], P.lF[0], 15 * s, legW, pal.pants, pal.pshade, 'rgba(200,220,255,0.20)');
-  R(c, knF[0] - 4 * s, knF[1] - 8 * s, 8 * s, 4 * s, 'rgba(255,255,255,0.10)'); // thigh light
-  var anF = limb(c, knF[0], knF[1], P.lF[1], 13 * s, legW * 0.85, pal.pants, pal.pshade, 'rgba(200,220,255,0.20)');
+  // ---- front leg: long thigh, knee shade, shin, heavy boot ----
+  var hipF = [hipX + 4 * s, hipY];
+  var knF = limb(c, hipF[0], hipF[1], P.lF[0], 19 * s, legW, pal.pants, pal.pshade, pal.pdeep, 'rgba(200,220,255,0.20)');
+  R(c, knF[0] - 5 * s, knF[1] - 10 * s, 10 * s, 5 * s, 'rgba(255,255,255,0.10)'); // thigh light
+  var anF = limb(c, knF[0], knF[1], P.lF[1], 17 * s, legW * 0.85, pal.pants, pal.pshade, pal.pdeep, 'rgba(200,220,255,0.20)');
   boot(c, anF[0], anF[1], s, pal);
 
-  // ---- front arm: bicep bulge, forearm, heavy fist ----
-  var shF = [shX + 4 * s, shY + 1 * s];
-  var elF = limb(c, shF[0], shF[1], P.aF[0], 12 * s, armW, pal.jacket, pal.jshade, pal.jrim);
+  // ---- front arm: jacket sleeve, skin forearm, wristband, heavy fist ----
+  var shF = [shX + 5 * s, shY + 2 * s];
+  var elF = limb(c, shF[0], shF[1], P.aF[0], 15 * s, armW, pal.jacket, pal.jshade, pal.jdeep, pal.jrim);
+  rectO(c, shF[0] - 7 * s, shF[1] - 7 * s, 14 * s, 14 * s, pal.jacket); // deltoid cap
+  R(c, shF[0] - 7 * s, shF[1] - 7 * s, 14 * s, 5.5 * s, pal.jrim);      // deltoid light
+  R(c, shF[0] - 7 * s, shF[1] + 1.5 * s, 14 * s, 5.5 * s, pal.jshade);  // deltoid undercut
   var biR = P.aF[0] * Math.PI / 180;
-  R(c, elF[0] - Math.cos(biR) * 6 * s - 3 * s, elF[1] - Math.sin(biR) * 6 * s - 4 * s,
-     7 * s, 8 * s, 'rgba(255,255,255,0.10)');                          // bicep swell light
-  var wrF = limb(c, elF[0], elF[1], P.aF[1], 10 * s, armW * 0.9, pal.skin, pal.sksh, 'rgba(255,240,200,0.30)');
+  R(c, elF[0] - Math.cos(biR) * 7.5 * s - 3.5 * s, elF[1] - Math.sin(biR) * 7.5 * s - 5 * s,
+     8 * s, 10 * s, 'rgba(255,255,255,0.10)');                          // bicep swell light
+  segO(c, elF[0], elF[1], P.aF[1], 4 * s, armW * 0.95,
+       type === 'player' ? '#17c3b2' : type === 'punk' ? '#e6d3ae' : '#101018'); // cuff
+  var wrF = limb(c, elF[0], elF[1], P.aF[1], 13 * s, armW * 0.9, pal.skin, pal.sksh, pal.skdeep, 'rgba(255,240,200,0.30)');
   fist(c, wrF[0], wrF[1], s, pal);
   // wristband
-  segO(c, elF[0], elF[1], P.aF[1], 3.4 * s, armW * 0.95,
+  segO(c, elF[0], elF[1], P.aF[1], 3.8 * s, armW * 0.95,
        type === 'player' ? '#17c3b2' : type === 'punk' ? '#e6d3ae' : '#101018');
 
   // weapon held overhead in swing pose (heavy wooden club)
   if (pose === 'swing') {
-    segO(c, wrF[0], wrF[1] - 2 * s, -25, 18 * s, 6 * s, '#8a5a2b');
-    R(c, wrF[0] - 2 * s, wrF[1] - 5 * s, 6 * s, 7 * s, '#6e451f');
-    R(c, wrF[0] - 2 * s, wrF[1] - 5 * s, 6 * s, 2 * s, '#a3763d');
+    segO(c, wrF[0], wrF[1] - 2 * s, -25, 22 * s, 7 * s, '#8a5a2b');
+    R(c, wrF[0] - 2.4 * s, wrF[1] - 6 * s, 7 * s, 8 * s, '#6e451f');
+    R(c, wrF[0] - 2.4 * s, wrF[1] - 6 * s, 7 * s, 2.4 * s, '#a3763d');
   }
 
-  // ---- head: heavy jaw, brow, detailed face ----
-  var hx = shX + Math.sin(lean) * 6 * s + P.head[0] * s - 8 * s;
-  var hy = shY - 11 * s + P.head[1] * s;
-  rectO(c, hx, hy, 16 * s, 15 * s, pal.skin);
-  R(c, hx, hy + 11 * s, 16 * s, 4 * s, pal.sksh);                     // jaw shade
-  R(c, hx + 12 * s, hy, 4 * s, 15 * s, 'rgba(255,240,200,0.22)');      // face rim light
-  R(c, hx, hy, 16 * s, 2.4 * s, 'rgba(255,255,255,0.12)');            // forehead light
-  drawHeadgear(c, type, hx, hy, 16 * s, 15 * s, pal, s);
+  // ---- head: heavy jaw, detailed arcade face ----
+  var hx = shX + Math.sin(lean) * 8 * s + P.head[0] * s - 9 * s;
+  var hy = shY - 4 * s - 19 * s + P.head[1] * s;
+  rectO(c, hx, hy, 18 * s, 19 * s, pal.skin);
+  R(c, hx + 13.5 * s, hy, 4.5 * s, 19 * s, 'rgba(255,240,200,0.20)');   // face rim light
+  R(c, hx, hy, 18 * s, 2.6 * s, 'rgba(255,255,255,0.12)');             // forehead light
+  drawHeadgear(c, type, hx, hy, 18 * s, 19 * s, pal, s);
 }
+
 
 /* pose key selection from live fighter state */
 var POSES = ['idle0', 'idle1', 'walk0', 'walk1', 'walk2', 'walk3',
@@ -1315,7 +1394,7 @@ var SPR = {};   // SPR[type][pose] -> canvas
   for (var ti = 0; ti < types.length; ti++) {
     var type = types[ti], s = FSCALE[type];
     SPR[type] = {};
-    var cw = 72 * s + 16, ch = 64 * s + 20;   // margin for outlines + raised fists
+    var cw = 104 * s + 24, ch = 112 * s + 30;   // hero-scale box: ~96u art + outline/fist margin
     for (var pi = 0; pi < POSES.length; pi++) {
       var c = makeSprite(cw, ch);
       var g = c.getContext('2d');
@@ -1528,9 +1607,19 @@ function farTile(idx) {
     for (var px = 0; px < 480; px += 60) R(g, px, 30, 3, 186, '#190a1e'); // panel seams
     g.fillStyle = 'rgba(201,162,39,0.08)';                           // mural glow
     g.beginPath(); g.ellipse(240, 120, 110, 70, 0, 0, Math.PI * 2); g.fill();
+    [24, 386].forEach(function (dx) {                                // ornate doors
+      R(g, dx, 40, 70, 120, '#1c0a20');
+      R(g, dx + 5, 45, 60, 110, '#2c1230');
+      R(g, dx + 12, 52, 46, 44, '#3a1638');
+      R(g, dx + 12, 102, 46, 46, '#3a1638');
+      R(g, dx + 12, 52, 46, 3, '#c9a227');
+      R(g, dx + 12, 102, 46, 3, '#c9a227');
+      R(g, dx - 4, 34, 78, 8, '#160818');
+      R(g, dx - 4, 34, 78, 2, '#c9a227');
+    });
     drawCrown(g, 195, 62, 90, 56, '#c9a227', '#d83636');              // crown mural
     R(g, 195, 116, 90, 3, 'rgba(255,233,163,0.25)');
-    crownSign(g, 360, 44);                                            // small framed crown sign
+    crownSign(g, 296, 44);                                            // small framed crown sign
     for (var sc = 0; sc < 6; sc++) {                                  // sconce glows
       var sx = 40 + sc * 80;
       R(g, sx, 60, 8, 14, '#c9a227');
@@ -1750,12 +1839,52 @@ function nearStrip(idx, st) {
     R(g, 700, 138, 14, 20, '#d83636');                               // hydrant
     R(g, 700, 138, 14, 4, '#ff6b6b');
     R(g, 702, 134, 10, 5, '#8f1f1f');
+    // signature marquee: NEON ROW in neon (original signage, code-drawn)
+    R(g, 690, 34, 150, 34, '#0a0a12');
+    R(g, 692, 36, 146, 30, '#1a0f24');
+    R(g, 692, 36, 146, 3, '#ff5fa2');
+    R(g, 692, 63, 146, 3, '#ff5fa2');
+    g.fillStyle = '#ff5fa2';
+    g.font = 'bold 17px monospace'; g.textAlign = 'center'; g.textBaseline = 'top';
+    g.fillText('NEON ROW', 765, 41);
+    g.fillStyle = 'rgba(255,95,162,0.12)';                            // neon spill
+    g.beginPath(); g.ellipse(765, 100, 90, 30, 0, 0, Math.PI * 2); g.fill();
+    // big original car billboard (code-drawn coupe — cover art stays small)
+    R(g, 1000, 18, 170, 66, '#0a0a12');
+    R(g, 1002, 20, 166, 62, '#241a10');
+    R(g, 1002, 20, 166, 4, '#c9a227');
+    R(g, 1002, 78, 166, 4, '#c9a227');
+    (function () {
+      var bx = 1012, by = 48;
+      R(g, bx, by, 146, 18, '#a32633');
+      R(g, bx, by, 146, 5, '#d84a5a');
+      R(g, bx + 32, by - 12, 84, 14, '#a32633');
+      R(g, bx + 36, by - 10, 76, 9, '#0d141c');
+      R(g, bx + 36, by - 10, 28, 3, 'rgba(255,255,255,0.3)');
+      R(g, bx, by + 12, 146, 6, '#5e1420');
+      R(g, bx, by + 2, 8, 6, '#ffe9a3');
+      R(g, bx + 138, by + 2, 8, 6, '#ff5f5f');
+      [bx + 28, bx + 118].forEach(function (wx) {
+        R(g, wx - 9, by + 12, 18, 10, '#0a0a0c');
+        R(g, wx - 4, by + 14, 8, 6, '#3a3a44');
+      });
+    })();
     R(g, 250, 146, 24, 14, '#1c1c22'); R(g, 276, 148, 19, 12, '#24242c');
     R(g, 253, 146, 18, 3, '#2e2e38');
-    // ground: sidewalk + asphalt
+    // ground: sidewalk + cobblestone street with perspective
     R(g, 0, 138, sw, 24, '#3a3a44');
     for (var sx = 0; sx < sw; sx += 44) R(g, sx, 138, 2, 24, '#2c2c34');
     R(g, 0, 162, sw, 54, '#16161e');
+    (function () {                                                    // cobbles grow toward viewer
+      var ry = 164, rh = 5;
+      while (ry < 214) {
+        for (var stx = ((ry / 5) | 0) % 2 * 11; stx < sw; stx += 22) {
+          R(g, stx, ry, 18, rh - 1, '#1e1e28');
+          R(g, stx, ry, 18, 2, '#2e2e3c');
+        }
+        ry += rh; rh += 2;
+      }
+    })();
     R(g, 0, 162, sw, 3, '#23232e');
     g.fillStyle = '#1e1e28';
     for (var lx2 = 30; lx2 < sw; lx2 += 72) R(g, lx2, 188, 34, 3, '#1e1e28');
@@ -1798,9 +1927,30 @@ function nearStrip(idx, st) {
       R(g, ax, 96, 96, 4, '#3a3a48');
       R(g, ax, 122, 96, 3, 'rgba(0,0,0,0.3)');
     });
-    // concrete ground
+    // stacked cargo crates (original set-piece, rooftop-crate grammar)
+    function crate(cx, cy, cs) {
+      R(g, cx, cy, cs, cs, '#7a5c14');
+      R(g, cx, cy, cs, 4, '#a3862e'); R(g, cx, cy + cs - 4, cs, 4, '#5e4510');
+      R(g, cx, cy, 4, cs, '#a3862e'); R(g, cx + cs - 4, cy, 4, cs, '#5e4510');
+      for (var sl = 9; sl < cs - 5; sl += 9) R(g, cx + 5, cy + sl, cs - 10, 2, 'rgba(0,0,0,0.28)');
+      R(g, cx + cs / 2 - 7, cy + cs / 2 - 7, 14, 14, '#c9a227');
+      R(g, cx + cs / 2 - 7, cy + cs / 2 - 7, 14, 3, '#ffe9a3');
+      R(g, cx + 2, cy + cs + 1, cs - 4, 3, 'rgba(0,0,0,0.35)');       // ground shadow
+    }
+    crate(852, 96, 40); crate(894, 96, 40); crate(873, 56, 40);
+    // stenciled street sign (original signage, code-drawn)
+    g.fillStyle = '#c9c9d8';
+    g.font = 'bold 15px monospace'; g.textAlign = 'left'; g.textBaseline = 'top';
+    g.fillText('CHROME ALLEY', 596, 52);
+    g.strokeStyle = '#3a3a48'; g.lineWidth = 2;
+    g.strokeRect(594, 50, 130, 22);
+    // concrete ground with perspective seams
     R(g, 0, 136, sw, 80, '#181820');
     R(g, 0, 136, sw, 4, '#232330');
+    g.strokeStyle = '#0e0e14'; g.lineWidth = 1;
+    for (var px = -200; px < sw + 200; px += 110) {                  // seams converge up-wall
+      g.beginPath(); g.moveTo(px, 216); g.lineTo(sw / 2 + (px - sw / 2) * 0.45, 136); g.stroke();
+    }
     g.fillStyle = 'rgba(0,0,0,0.35)';
     g.beginPath(); g.ellipse(420, 184, 42, 8, 0, 0, Math.PI * 2); g.fill();
     g.beginPath(); g.ellipse(830, 174, 26, 6, 0, 0, Math.PI * 2); g.fill();
@@ -1820,11 +1970,24 @@ function nearStrip(idx, st) {
     g.beginPath(); g.ellipse(950, 186, 30, 5, 0, 0, Math.PI * 2); g.fill();
     stripVignette(g, sw);
   } else {
-    // club interior: deep purple walls, wood floor (mid speaker stacks read above)
+    // club interior: deep purple walls, red carpet (mid speaker stacks read above)
     R(g, 0, 84, sw, 44, '#33143a');
     R(g, 0, 84, sw, 2, '#8a6f1e');
     R(g, 0, 124, sw, 4, '#1c0a20');
     for (var vx = 0; vx < sw; vx += 72) R(g, vx, 88, 3, 36, '#241028'); // panel seams
+    for (var mx = 36; mx < sw; mx += 144) {                          // gold wall molding
+      g.strokeStyle = '#8a6f1e'; g.lineWidth = 2;
+      g.strokeRect(mx, 90, 72, 32);
+      g.strokeStyle = 'rgba(255,233,163,0.35)'; g.lineWidth = 1;
+      g.strokeRect(mx + 4, 94, 64, 24);
+    }
+    // big crown marquee: original Kings iconography over the rig
+    R(g, 500, 6, 184, 26, '#0a0a12');
+    R(g, 502, 8, 180, 22, '#2a1a0a');
+    R(g, 502, 8, 180, 2, '#ffe9a3');
+    drawCrown(g, 512, 10, 26, 18, '#c9a227', '#d83636');
+    g.fillStyle = '#ffd23f'; g.font = 'bold 16px monospace'; g.textAlign = 'left'; g.textBaseline = 'top';
+    g.fillText("KING'S BLOCK", 544, 11);
     R(g, 0, 30, sw, 8, '#160818');                                   // ceiling trim
     for (var k = 0; k < bbs.length; k++) framedSign(g, bbs[k].x, 86, bbs[k].art);
     cwiWallSign(g, 300, 88, 44);
@@ -1841,11 +2004,19 @@ function nearStrip(idx, st) {
     g.beginPath(); g.arc(203, 141, 12, 0, Math.PI * 2); g.fill();
     g.fillStyle = '#2c2c3a';
     g.beginPath(); g.arc(203, 141, 5, 0, Math.PI * 2); g.fill();
-    // wood floor
-    R(g, 0, 128, sw, 88, '#2c1a2e');
-    for (var fx = 0; fx < sw; fx += 48) R(g, fx, 128, 2, 88, '#1a0c1c');
-    R(g, 0, 128, sw, 5, 'rgba(201,162,39,0.22)');
-    for (var fz = 140; fz < 216; fz += 24) R(g, 0, fz, sw, 1, 'rgba(0,0,0,0.25)');
+    // red carpet with perspective: gold border + converging seams + medallions
+    R(g, 0, 128, sw, 88, '#6e1420');
+    R(g, 0, 128, sw, 4, '#c9a227');
+    R(g, 0, 132, sw, 2, 'rgba(255,233,163,0.4)');
+    g.strokeStyle = 'rgba(0,0,0,0.28)'; g.lineWidth = 1;
+    for (var px2 = -160; px2 < sw + 160; px2 += 100) {
+      g.beginPath(); g.moveTo(px2, 216); g.lineTo(sw / 2 + (px2 - sw / 2) * 0.4, 128); g.stroke();
+    }
+    for (var dx2 = 80; dx2 < sw; dx2 += 140)
+      for (var dy2 = 152; dy2 < 212; dy2 += 30) {
+        R(g, dx2 - 9, dy2 - 6, 18, 12, 'rgba(201,162,39,0.22)');
+        R(g, dx2 - 4, dy2 - 3, 8, 6, 'rgba(201,162,39,0.45)');
+      }
     R(g, 0, 84, sw, 16, 'rgba(10,3,14,0.35)');                        // top grime shade
     stripVignette(g, sw);
   }
@@ -2221,6 +2392,8 @@ if (typeof global !== 'undefined') {
   global.__SPR = SPR;
   global.__drawFighterArt = drawFighterArt;
   global.__fitCanvas = fitCanvas;
+  global.__dblTap = { guard: guardDoubleTap, kill: killGestureZoom,
+                     reset: function () { __lastTouchEnd = 0; } };
   global.__CAM = { x: CAM.x, y: CAM.y, viewW: CAM.viewW, viewH: CAM.viewH,
                    scale: CAM.scale, cw: CAM.cw, ch: CAM.ch,
                    fighterFrac: CAM.fighterFrac };
